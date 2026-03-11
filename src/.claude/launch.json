@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/start-dev.cjs", "--host", "127.0.0.1", "--port", "5180"],
+      "port": 5180
+    }
+  ]
+}
