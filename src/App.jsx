@@ -111,19 +111,45 @@ const generateOrders = (syncData) => {
     : [];
   const syncDate = isV2
     ? (syncData.flexgate?.date || syncData.baljumoa?.date || new Date().toISOString().slice(0,10))
-    : '2026-03-10';
+    : new Date().toISOString().slice(0,10);
 
   // ═══ FG 주문 파싱 (no|wsa|time|buyer|phone|ssa|status|paymentMethod|channel|orderRoute|price) ═══
+  // 가격 파싱: 플렉스지 가격 컬럼이 합쳐진 경우 (예: "12900000000012900") 결제금액(마지막 값)만 추출
+  const parsePrice = (pr) => {
+    if (!pr) return 0;
+    const cleaned = String(pr).replace(/,/g, '');
+    const n = Number(cleaned);
+    if (isNaN(n) || n === 0) return 0;
+    if (n < 1000000) return n;
+    // 연결된 가격 데이터에서 결제금액(마지막 숫자) 추출
+    const m = cleaned.match(/0{2,}(\d{4,6})$/);
+    if (m) return parseInt(m[1]);
+    return 0;
+  };
   const fgOrders = fgRawLines.filter(l => typeof l === 'string').map(line => {
     const [no,wsa,time,buyer,phone,ssa,status,paymentMethod,channel,orderRoute,pr] = line.split('|');
-    return {no,wsa,time,buyer,phone,ssa,status:status||'입금확인',paymentMethod:paymentMethod||'',channel:channel||'',orderRoute:orderRoute||'ETC',price:Number(pr)};
+    return {no,wsa,time,buyer,phone,ssa,status:status||'입금확인',paymentMethod:paymentMethod||'',channel:channel||'',orderRoute:orderRoute||'ETC',price:parsePrice(pr)};
   });
 
-  // ═══ BJ 주문 파싱 (wsa|buyer|phone|product|seller|supplier|status|qty|selPrice|supPrice|carrier|invoice) ═══
-  const bjOrders = bjRawLines.filter(l => typeof l === 'string').map(line => {
-    const [wsa,buyer,phone,product,seller,supplier,status,qty,selPrice,supPrice,carrier,invoice] = line.split('|');
-    return {wsa,buyer,phone,product,seller,supplier,status,qty:Number(qty)||1,selPrice:Number(selPrice)||0,supPrice:Number(supPrice)||0,carrier:carrier||'',invoice:invoice||''};
-  });
+  // ═══ BJ 주문 파싱: ordersDetail이 있으면 상세 데이터 사용, 없으면 pipe 형식 fallback ═══
+  const bjDetailArr = isV2 ? (syncData.baljumoa?.ordersDetail || []) : [];
+  const bjOrders = bjDetailArr.length > 0
+    ? bjDetailArr.map(o => ({
+        wsa: o.wsa, buyer: o.buyer, phone: o.phone, product: o.productName,
+        seller: o.seller, supplier: o.supplier, status: o.status,
+        qty: Number(o.qty) || 1, selPrice: Number(o.selPrice) || 0, supPrice: Number(o.supPrice) || 0,
+        consumerPrice: Number(o.consumerPrice) || 0,
+        carrier: o.carrier || '', invoice: o.invoice || '',
+        po: o.po || '', orderDate: o.orderDate || '', uploadDate: o.uploadDate || '',
+        zip: o.zip || '', address: o.address || '',
+        option: o.option || '', productCode: o.productCode || '', optionCode: o.optionCode || '',
+        no: o.no || '',
+      }))
+    : bjRawLines.filter(l => typeof l === 'string').map(line => {
+        const [wsa,buyer,phone,product,seller,supplier,status,qty,selPrice,supPrice,carrier,invoice] = line.split('|');
+        return {wsa,buyer,phone,product,seller,supplier,status,qty:Number(qty)||1,selPrice:Number(selPrice)||0,supPrice:Number(supPrice)||0,carrier:carrier||'',invoice:invoice||'',
+          consumerPrice:0, po:'', orderDate:'', uploadDate:'', zip:'', address:'', option:'', productCode:'', optionCode:'', no:''};
+      });
 
   // ═══ WSA 기준 Map 빌드 (정규화된 WSA → 주문 배열) ═══
   const fgByWsa = new Map();
@@ -201,12 +227,13 @@ const generateOrders = (syncData) => {
         const m = SSA_MAP[fg.ssa] || {};
         const hasInv = !!(bj.invoice);
         orders.push({
-          id: fg.wsa+'-'+fg.no, no: fg.no, product: bj.product || m.p || '주문상품',
-          productCode: m.c||'', option: m.o||'', optCode: m.o||'',
-          buyer: fg.buyer, phone: fg.phone, address: '',
+          id: fg.wsa+'-'+fg.no, no: bj.no || fg.no, product: bj.product || m.p || '주문상품',
+          productCode: bj.productCode || m.c||'', option: bj.option || m.o||'', optCode: bj.optionCode || m.o||'',
+          buyer: fg.buyer, phone: fg.phone, address: bj.address || '', zip: bj.zip || '',
           seller: bj.seller || '모범기한(플랙스지)', supplier: m.s || bj.supplier || '공급사',
           qty: bj.qty || 1, price: fg.price, shippingFee: m.f != null ? m.f : 3000,
-          supplyPrice: bj.supPrice || fg.price, total: fg.price + (m.f || 0),
+          supplyPrice: bj.supPrice || fg.price, consumerPrice: bj.consumerPrice || 0,
+          total: fg.price + (m.f || 0),
           orderStatus: fg.status, bjStatus: bj.status,
           supplyStatus: bj.status === '발주서생성' ? '발주서생성' : bj.status === '신규등록' ? '미발주' : '회신완료',
           invoiceStatus: hasInv ? 'registered' : 'none',
@@ -216,6 +243,7 @@ const generateOrders = (syncData) => {
           ssa: fg.ssa||'', taxDeduction: '적용',
           mailSent: hasInv, shipCount: hasInv ? 1 : 0,
           date: syncDate, time: fg.time || '',
+          po: bj.po || '', orderDate: bj.orderDate || '', uploadDate: bj.uploadDate || '',
           site: 'both', memo: '', selected: false,
           matched: true, statusDiff: (bj.status||'') !== (fg.status||''),
           wsa: fg.wsa, bjWsa: bj.wsa,
@@ -225,12 +253,13 @@ const generateOrders = (syncData) => {
       // ── 발주모아 전용 (테무/기타 채널 — 플렉스지에 없음) ──
       bjList.forEach((bj, idx) => {
         orders.push({
-          id: bj.wsa+'-bj-'+idx, no: '', product: bj.product,
-          productCode: '', option: '', optCode: '',
-          buyer: bj.buyer, phone: bj.phone, address: '',
+          id: bj.wsa+'-bj-'+idx, no: bj.no || '', product: bj.product,
+          productCode: bj.productCode || '', option: bj.option || '', optCode: bj.optionCode || '',
+          buyer: bj.buyer, phone: bj.phone, address: bj.address || '', zip: bj.zip || '',
           seller: bj.seller, supplier: bj.supplier || bj.seller,
           qty: bj.qty || 1, price: bj.selPrice || bj.supPrice, shippingFee: 0,
-          supplyPrice: bj.supPrice, total: (bj.qty||1) * (bj.supPrice||0),
+          supplyPrice: bj.supPrice, consumerPrice: bj.consumerPrice || 0,
+          total: (bj.qty||1) * (bj.supPrice||0),
           orderStatus: bj.status, bjStatus: bj.status,
           supplyStatus: bj.status === '발주서생성' ? '발주서생성' : bj.status === '신규등록' ? '미발주' : '회신완료',
           invoiceStatus: bj.invoice ? 'registered' : 'none',
@@ -240,6 +269,7 @@ const generateOrders = (syncData) => {
           ssa: '', taxDeduction: '미적용',
           mailSent: false, shipCount: 0,
           date: syncDate, time: '',
+          po: bj.po || '', orderDate: bj.orderDate || '', uploadDate: bj.uploadDate || '',
           site: 'baljumoa', memo: '', selected: false,
           matched: false, statusDiff: false,
           wsa: bj.wsa, bjWsa: bj.wsa,
@@ -331,14 +361,14 @@ const MENU = [
 // COMPONENTS
 // ═══════════════════════════════════════════════════════════
 
-const Badge = ({children,color,bg}) => (
-  <span style={{display:"inline-flex",alignItems:"center",gap:3,padding:"3px 10px",borderRadius:6,fontSize:10,fontWeight:600,color,background:bg,whiteSpace:"nowrap",letterSpacing:"-0.01em"}}>{children}</span>
+const Badge = ({children,color,bg,large}) => (
+  <span style={{display:"inline-flex",alignItems:"center",gap:4,padding:large?"5px 14px":"4px 11px",borderRadius:8,fontSize:large?13:11.5,fontWeight:600,color,background:bg,whiteSpace:"nowrap",letterSpacing:"-0.01em"}}>{children}</span>
 );
 const Dot = ({color,size=6}) => (<span style={{width:size,height:size,borderRadius:"50%",background:color,flexShrink:0}}/>);
 
 const Btn = ({onClick,children,variant="default",disabled,small,style:es}) => {
   const v={default:{bg:"#F5F5F7",c:"#374151",b:"1px solid #E5E5EA"},primary:{bg:"linear-gradient(135deg, #6C63FF 0%, #5B52E8 100%)",c:"#fff",b:"none"},success:{bg:"linear-gradient(135deg, #059669 0%, #047857 100%)",c:"#fff",b:"none"},danger:{bg:"#FEF2F2",c:"#DC2626",b:"1px solid #FECACA"},warning:{bg:"#FFFBEB",c:"#92400E",b:"1px solid #FDE68A"},purple:{bg:"linear-gradient(135deg, #7C3AED 0%, #6D28D9 100%)",c:"#fff",b:"none"},outline:{bg:"#fff",c:"#374151",b:"1px solid #E5E5EA"},ghost:{bg:"transparent",c:"#6B7280",b:"none"}}[variant]||{bg:"#F5F5F7",c:"#374151",b:"1px solid #E5E5EA"};
-  return (<button onClick={onClick} disabled={disabled} style={{display:"inline-flex",alignItems:"center",gap:5,padding:small?"5px 10px":"7px 14px",borderRadius:8,fontSize:small?10.5:11.5,fontWeight:600,cursor:disabled?"not-allowed":"pointer",background:v.bg,color:v.c,border:v.b,opacity:disabled?0.5:1,whiteSpace:"nowrap",transition:"all 0.15s ease",letterSpacing:"-0.01em",...es}}>{children}</button>);
+  return (<button onClick={onClick} disabled={disabled} style={{display:"inline-flex",alignItems:"center",gap:6,padding:small?"7px 14px":"10px 18px",borderRadius:10,fontSize:small?12:13.5,fontWeight:600,cursor:disabled?"not-allowed":"pointer",background:v.bg,color:v.c,border:v.b,opacity:disabled?0.5:1,whiteSpace:"nowrap",transition:"all 0.15s ease",letterSpacing:"-0.01em",...es}}>{children}</button>);
 };
 const Input = ({style:es,...p}) => (<input {...p} style={{padding:"8px 12px",borderRadius:8,border:"1px solid #E8E8EE",fontSize:12,outline:"none",width:"100%",boxSizing:"border-box",transition:"all 0.2s ease",background:"#FAFBFC",...es}}/>);
 const Select = ({style:es,children,...p}) => (<select {...p} style={{padding:"8px 12px",borderRadius:8,border:"1px solid #E8E8EE",fontSize:12,outline:"none",appearance:"none",paddingRight:28,backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%239CA3AF' stroke-width='3'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,backgroundRepeat:"no-repeat",backgroundPosition:"right 8px center",boxSizing:"border-box",transition:"all 0.2s ease",background:"#FAFBFC",...es}}>{children}</select>);
@@ -374,8 +404,8 @@ const Avatar = ({emoji,color,size=32,online,border,style:es}) => (
   </div>
 );
 
-const TH={padding:"10px 14px",textAlign:"left",fontWeight:700,color:"#555",fontSize:10,whiteSpace:"nowrap",background:"#F8F9FB",letterSpacing:"0.02em",textTransform:"none",borderBottom:"2px solid #EEEEF2"};
-const TD={padding:"10px 14px",color:"#374151",fontSize:11.5,borderBottom:"1px solid #F5F5F7"};
+const TH={padding:"12px 14px",textAlign:"left",fontWeight:700,color:"#555",fontSize:12.5,whiteSpace:"nowrap",background:"#F8F9FB",letterSpacing:"0.02em",textTransform:"none",borderBottom:"2px solid #EEEEF2"};
+const TD={padding:"12px 14px",color:"#374151",fontSize:13,borderBottom:"1px solid #F5F5F7"};
 
 // ═══════════════════════════════════════════════════════════
 // MAIN
@@ -424,7 +454,7 @@ export default function App() {
   const [modalPresetName,setModalPresetName]=useState("");
   const [search,setSearch]=useState("");
   const [advSearch,setAdvSearch]=useState(false);
-  const [advFilters,setAdvFilters]=useState({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:"2026-03-06",dateTo:"2026-03-06",buyer:"",product:"",invoiceYn:"all"});
+  const [advFilters,setAdvFilters]=useState({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:new Date().toISOString().slice(0,10),dateTo:new Date().toISOString().slice(0,10),buyer:"",product:"",invoiceYn:"all"});
   const [siteFilter,setSiteFilter]=useState("all");
   const [statusFilter,setStatusFilter]=useState("all");
   const [supplyFilter,setSupplyFilter]=useState("all");
@@ -435,6 +465,8 @@ export default function App() {
   const [sideSearchOpen,setSideSearchOpen]=useState(false);
   const [expandedSections,setExpandedSections]=useState(MENU.reduce((a,m)=>({...a,[m.section]:["발주 등록","주문 현황","발주 관리","송장 관리"].includes(m.section)}),{}));
   const [quickFilter,setQuickFilter]=useState(null);
+  const [currentPage,setCurrentPage]=useState(1);
+  const [pageSize,setPageSize]=useState(100);
   const [invoiceModal,setInvoiceModal]=useState(false);
   const [detailModal,setDetailModal]=useState(null);
   const [poModal,setPoModal]=useState(false);
@@ -737,6 +769,10 @@ export default function App() {
     return true;
   });
 
+  const totalPages=Math.max(1,Math.ceil(filtered.length/pageSize));
+  const safeCurrentPage=Math.min(currentPage,totalPages);
+  const paginatedOrders=filtered.slice((safeCurrentPage-1)*pageSize,safeCurrentPage*pageSize);
+
   const selected=filtered.filter(o=>o.selected);
   const uniqueSellers=[...new Set(orders.map(o=>o.seller))].sort();
   const uniqueSuppliers=[...new Set(orders.map(o=>o.supplier))].sort();
@@ -745,7 +781,7 @@ export default function App() {
   const toggleAll=()=>{const v=!selectAll;setSelectAll(v);const ids=new Set(filtered.map(o=>o.id));setOrders(p=>p.map(o=>ids.has(o.id)?{...o,selected:v}:o));};
   const clearSel=()=>{setOrders(p=>p.map(o=>({...o,selected:false})));setSelectAll(false);};
   const navigatePage=k=>{
-    setPage(k);setQuickFilter(null);setStatusFilter("all");setSupplyFilter("all");setSiteFilter("all");setSellerFilter("all");clearSel();setSearch("");
+    setPage(k);setQuickFilter(null);setStatusFilter("all");setSupplyFilter("all");setSiteFilter("all");setSellerFilter("all");clearSel();setSearch("");setCurrentPage(1);
     if(k!=="home"){setOpenTabs(prev=>{if(prev.find(t=>t.key===k))return prev;let label=k,icon="📄";for(const sec of MENU)for(const it of sec.items)if(it.key===k){label=it.label;icon=sec.icon;}return[...prev,{key:k,label,icon}].slice(-8);});}
   };
   const closeTab=(key,e)=>{e?.stopPropagation();setOpenTabs(prev=>{const remaining=prev.filter(t=>t.key!==key);if(page===key){setPage(remaining.length>0?remaining[remaining.length-1].key:"home");}return remaining;});};
@@ -770,13 +806,73 @@ export default function App() {
   const SAFE_MODE = false;
   const safeBlock = (name) => { showToast(`⛔ [안전모드] ${name} 기능이 비활성화되었습니다`, "error"); };
 
+  // ─── 발주모아 연동 가져오기 ──────────────────────────
+  const [importStatus,setImportStatus]=useState({running:false,result:null,statusText:"",logs:[],channel:"all"});
+  const [importChannel,setImportChannel]=useState("all");
+  const [showImportPanel,setShowImportPanel]=useState(false);
+  const [showChannelMenu,setShowChannelMenu]=useState(false);
+  useEffect(()=>{if(!showChannelMenu)return;const h=()=>setShowChannelMenu(false);setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
+  const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
+  const stopImport=async()=>{
+    try{await fetch('/api/stop-import',{method:'POST'});}catch{}
+    setImportStatus(prev=>({running:false,result:{success:false,message:'사용자가 중지함'},statusText:"",logs:prev.logs,channel:prev.channel}));
+    showToast("연동 가져오기 중지됨","error");
+  };
+  const triggerImport=async(ch)=>{
+    const channel=ch||importChannel;
+    if(importStatus.running)return;
+    const channelLabel=importChannels.find(c=>c.value===channel)?.label||channel;
+    setImportStatus({running:true,result:null,statusText:"웨일 브라우저 실행중...",logs:[{time:new Date().toISOString(),msg:`${channelLabel} 연동 시작`}],channel});
+    setShowImportPanel(true);
+    showToast(`발주모아 연동 가져오기 (${channelLabel})`);
+    try{
+      const r=await fetch('/api/trigger-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel})});
+      const d=await r.json();
+      if(d.ok){
+        const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
+        let done=false;
+        for(let i=0;i<120&&!done;i++){
+          await new Promise(r=>setTimeout(r,2000));
+          try{
+            const sr=await fetch('/api/import-status?_='+Date.now());
+            const sd=await sr.json();
+            const label=statusLabels[sd.status]||sd.status||"처리중...";
+            const newLogs=sd.logs||[];
+            setImportStatus(prev=>({...prev,statusText:label+(sd.count?` (${sd.count}건)`:""),logs:newLogs.length>0?newLogs:prev.logs}));
+            if(sd.status==='login_required'&&i%5===0)showToast("웨일 브라우저에서 발주모아 로그인해주세요","error");
+            if(!sd.triggered&&(sd.status==='done'||sd.status==='error'||sd.status==='stopped')){
+              done=true;
+              setImportStatus(prev=>({running:false,result:sd.result,statusText:"",logs:sd.logs||prev.logs,channel}));
+              if(sd.status==='done'){showToast(`연동 완료! ${sd.result?.count||0}건 등록`);refresh();}
+              else if(sd.status==='stopped')showToast("연동 가져오기 중지됨","error");
+              else showToast(`연동 오류: ${sd.result?.error||"알 수 없는 오류"}`,"error");
+            }
+          }catch{}
+        }
+        if(!done){
+          setImportStatus(prev=>({running:false,result:{message:'타임아웃'},statusText:"",logs:prev.logs,channel}));
+          showToast("연동 시간 초과 — 브라우저를 확인해주세요","error");
+        }
+      }
+    }catch(e){
+      setImportStatus(prev=>({running:false,result:{error:e.message},statusText:"",logs:prev.logs,channel}));
+      showToast("연동 실행 실패","error");
+    }
+  };
+
   const handleSendPO=()=>safeBlock("발주서 전송");
   const confirmSendPO=()=>safeBlock("발주서 전송");
   const handleStatusChange=()=>safeBlock("상태 변경");
   const openInvoiceModal=()=>safeBlock("송장 등록");
   const submitInvoices=()=>safeBlock("송장 등록");
   const simExcel=()=>safeBlock("엑셀 업로드");
-  const refresh=()=>{setProcessing(true);fetch('/fg-sync.json?_='+Date.now()).then(r=>r.json()).then(data=>{setOrders(generateOrders(data.orders));setProcessing(false);showToast(`MCP 데이터 새로고침 완료 (${data.count}건)`);}).catch(()=>{setOrders(generateOrders());setProcessing(false);showToast("데이터 새로고침 완료 (캐시)");});};
+  const refresh=()=>{setProcessing(true);
+    // 1단계: Downloads 폴더에서 최신 데이터 import 시도
+    fetch('/api/import-downloads?_='+Date.now()).then(r=>r.json()).catch(()=>({ok:false})).then(importResult=>{
+      if(importResult.updated) console.log('[Sync] Downloads import:', importResult);
+      // 2단계: 갱신된 fg-sync.json 다시 읽기
+      return fetch('/fg-sync.json?_='+Date.now()).then(r=>r.ok?r.json():null);
+    }).then(data=>{if(data){const newOrders=generateOrders(data);setOrders(newOrders);const fgC=newOrders.filter(o=>o.site==='flexgate'||o.site==='both').length;const bjC=newOrders.filter(o=>o.site==='baljumoa'||o.site==='both').length;const matchC=newOrders.filter(o=>o.site==='both').length;setSyncMeta({source:data.source||'cache',fgCount:fgC,bjCount:bjC,matchCount:matchC});setProcessing(false);showToast(`동기화 완료 (${newOrders.length}건)`);}else{setProcessing(false);showToast("데이터 없음","error");}}).catch(()=>{setProcessing(false);showToast("동기화 실패","error");});};
 
   const getPageTitle=()=>{
     if(page==="home")return"🏠 홈";
@@ -803,7 +899,7 @@ export default function App() {
     showToast("부계정 추가 완료");
   };
 
-  const SW=sideCollapsed?76:240;
+  const SW=sideCollapsed?76:280;
   const quickCards=[
     {key:"unordered",label:"🔗 매칭됨",value:counts.matched,color:"#8B5CF6",activeColor:"#7C3AED"},
     {key:"noInvoice",label:"⚠️ 상태불일치",value:counts.statusDiff,color:"#F59E0B",activeColor:"#D97706"},
@@ -844,11 +940,11 @@ export default function App() {
       <aside style={{width:SW,minWidth:SW,height:"100vh",background:"linear-gradient(180deg, #FAFBFC 0%, #F3F4F8 100%)",display:"flex",flexDirection:"column",transition:"width 0.25s cubic-bezier(0.4,0,0.2,1), min-width 0.25s cubic-bezier(0.4,0,0.2,1)",overflow:"hidden",borderRight:"1px solid #E8E8EE",boxShadow:"1px 0 8px rgba(0,0,0,0.02)"}}>
 
         {/* Logo 영역 */}
-        <div style={{height:68,display:"flex",alignItems:"center",padding:sideCollapsed?"0 8px":"0 20px",flexShrink:0,gap:12,justifyContent:sideCollapsed?"center":"flex-start",borderBottom:"1px solid rgba(0,0,0,0.04)"}}>
+        <div style={{height:80,display:"flex",alignItems:"center",padding:sideCollapsed?"0 8px":"0 24px",flexShrink:0,gap:14,justifyContent:sideCollapsed?"center":"flex-start",borderBottom:"1px solid rgba(0,0,0,0.04)"}}>
           {sideCollapsed?(
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-              <div onClick={()=>{setPage("home");setQuickFilter(null);}} style={{width:38,height:38,borderRadius:12,background:`linear-gradient(135deg, ${theme.accent} 0%, ${theme.deep} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",boxShadow:`0 3px 12px ${theme.accent}40`,transition:"all 0.2s ease"}}>
-                <span style={{fontSize:18,color:"#fff",fontWeight:900}}>B</span>
+              <div onClick={()=>{setPage("home");setQuickFilter(null);}} style={{width:42,height:42,borderRadius:14,background:`linear-gradient(135deg, ${theme.accent} 0%, ${theme.deep} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",boxShadow:`0 3px 12px ${theme.accent}40`,transition:"all 0.2s ease"}}>
+                <span style={{fontSize:20,color:"#fff",fontWeight:900}}>B</span>
               </div>
               <button onClick={()=>setSideCollapsed(p=>!p)} style={{background:"none",border:"none",cursor:"pointer",color:"#9CA3AF",padding:"2px",display:"flex",alignItems:"center"}}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -856,22 +952,22 @@ export default function App() {
             </div>
           ):(
             <>
-            <div onClick={()=>{setPage("home");setQuickFilter(null);}} style={{width:38,height:38,borderRadius:12,background:`linear-gradient(135deg, ${theme.accent} 0%, ${theme.deep} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0,boxShadow:`0 3px 12px ${theme.accent}40`,transition:"all 0.2s ease"}}>
-              <span style={{fontSize:16,color:"#fff",fontWeight:900}}>B</span>
+            <div onClick={()=>{setPage("home");setQuickFilter(null);}} style={{width:44,height:44,borderRadius:14,background:`linear-gradient(135deg, ${theme.accent} 0%, ${theme.deep} 100%)`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0,boxShadow:`0 3px 12px ${theme.accent}40`,transition:"all 0.2s ease"}}>
+              <span style={{fontSize:19,color:"#fff",fontWeight:900}}>B</span>
             </div>
             <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>{setPage("home");setQuickFilter(null);}}>
-              <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",letterSpacing:"-0.02em"}}>발주자동화</div>
-              <div style={{fontSize:9,color:"#B0B0B0",fontWeight:500,marginTop:1}}>Procurement Hub</div>
+              <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A",letterSpacing:"-0.02em"}}>발주자동화</div>
+              <div style={{fontSize:11,color:"#B0B0B0",fontWeight:500,marginTop:2}}>Procurement Hub</div>
             </div>
             <button onClick={()=>setSideCollapsed(p=>!p)} style={{background:"none",border:"none",cursor:"pointer",color:"#BEBEBE",padding:"4px",display:"flex",alignItems:"center"}}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polyline points="15 18 9 12 15 6"/></svg>
             </button>
             </>
           )}
         </div>
 
         {/* Nav menu — flat section list */}
-        <nav style={{flex:1,overflow:"auto",padding:sideCollapsed?"8px 0":"12px 8px"}}>
+        <nav style={{flex:1,overflow:"auto",padding:sideCollapsed?"8px 0":"14px 10px"}}>
           {MENU.map(sec=>{
             const secActive=sec.items.some(it=>it.key===page&&!quickFilter);
             const secBadge=sec.items.reduce((sum,it)=>{
@@ -879,12 +975,12 @@ export default function App() {
               return sum+v;
             },0);
             return(
-            <button key={sec.section} className="mi" onClick={()=>navigatePage(sec.items[0].key)} title={sec.section} style={{width:"100%",display:"flex",alignItems:"center",gap:sideCollapsed?0:11,padding:sideCollapsed?"10px 0":"10px 16px",justifyContent:sideCollapsed?"center":"flex-start",background:secActive?`${theme.accent}0C`:"transparent",border:"none",borderLeft:secActive?`3px solid ${theme.accent}`:"3px solid transparent",borderRadius:sideCollapsed?0:"0 10px 10px 0",cursor:"pointer",position:"relative",transition:"all 0.15s ease",marginBottom:2}}>
-              <span style={{fontSize:sideCollapsed?22:17,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",width:sideCollapsed?44:24,height:sideCollapsed?32:24,flexShrink:0,opacity:secActive?1:0.65,transition:"opacity 0.15s"}}>{sec.icon}</span>
-              {!sideCollapsed&&<span style={{fontSize:12.5,fontWeight:secActive?700:500,color:secActive?theme.accent:"#555",flex:1,textAlign:"left",letterSpacing:"-0.01em",transition:"color 0.15s"}}>{sec.section}</span>}
-              {!sideCollapsed&&secBadge>0&&<span style={{padding:"2px 8px",borderRadius:99,fontSize:9,fontWeight:700,background:secActive?theme.accent:"#D1D1D1",color:"#fff",minWidth:18,textAlign:"center",transition:"all 0.15s"}}>{secBadge}</span>}
+            <button key={sec.section} className="mi" onClick={()=>navigatePage(sec.items[0].key)} title={sec.section} style={{width:"100%",display:"flex",alignItems:"center",gap:sideCollapsed?0:12,padding:sideCollapsed?"12px 0":"13px 20px",justifyContent:sideCollapsed?"center":"flex-start",background:secActive?`${theme.accent}0C`:"transparent",border:"none",borderLeft:secActive?`3.5px solid ${theme.accent}`:"3.5px solid transparent",borderRadius:sideCollapsed?0:"0 12px 12px 0",cursor:"pointer",position:"relative",transition:"all 0.15s ease",marginBottom:3}}>
+              <span style={{fontSize:sideCollapsed?24:20,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",width:sideCollapsed?48:28,height:sideCollapsed?36:28,flexShrink:0,opacity:secActive?1:0.65,transition:"opacity 0.15s"}}>{sec.icon}</span>
+              {!sideCollapsed&&<span style={{fontSize:14.5,fontWeight:secActive?700:500,color:secActive?theme.accent:"#555",flex:1,textAlign:"left",letterSpacing:"-0.01em",transition:"color 0.15s"}}>{sec.section}</span>}
+              {!sideCollapsed&&secBadge>0&&<span style={{padding:"3px 10px",borderRadius:99,fontSize:11,fontWeight:700,background:secActive?theme.accent:"#D1D1D1",color:"#fff",minWidth:22,textAlign:"center",transition:"all 0.15s"}}>{secBadge}</span>}
               {sideCollapsed&&secBadge>0&&(
-                <span style={{position:"absolute",top:4,right:6,minWidth:16,height:16,borderRadius:99,background:"#EF4444",color:"#fff",fontSize:8,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px",boxShadow:"0 1px 4px rgba(239,68,68,0.3)"}}>{secBadge}</span>
+                <span style={{position:"absolute",top:4,right:6,minWidth:18,height:18,borderRadius:99,background:"#EF4444",color:"#fff",fontSize:9,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 4px",boxShadow:"0 1px 4px rgba(239,68,68,0.3)"}}>{secBadge}</span>
               )}
             </button>
             );
@@ -895,10 +991,10 @@ export default function App() {
         <div style={{padding:sideCollapsed?"10px 6px":"12px 20px",borderTop:"1px solid rgba(0,0,0,0.05)",flexShrink:0}}>
           {!sideCollapsed?(
             <div>
-              <div style={{fontSize:9,fontWeight:600,color:"#B0B0B0",marginBottom:8,letterSpacing:"0.06em",textTransform:"uppercase"}}>테마 컬러</div>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#B0B0B0",marginBottom:10,letterSpacing:"0.06em",textTransform:"uppercase"}}>테마 컬러</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                 {THEME_PRESETS.map((tp,i)=>(
-                  <div key={i} onClick={()=>setThemeIdx(i)} style={{width:22,height:22,borderRadius:"50%",background:`linear-gradient(135deg, ${tp.accent} 0%, ${tp.deep || tp.accent} 100%)`,cursor:"pointer",border:themeIdx===i?`2.5px solid ${tp.accent}`:"2.5px solid transparent",transition:"all 0.2s ease",boxShadow:themeIdx===i?`0 0 0 2px #fff inset, 0 2px 8px ${tp.accent}40`:"0 1px 3px rgba(0,0,0,0.08)"}} title={tp.name}/>
+                  <div key={i} onClick={()=>setThemeIdx(i)} style={{width:26,height:26,borderRadius:"50%",background:`linear-gradient(135deg, ${tp.accent} 0%, ${tp.deep || tp.accent} 100%)`,cursor:"pointer",border:themeIdx===i?`2.5px solid ${tp.accent}`:"2.5px solid transparent",transition:"all 0.2s ease",boxShadow:themeIdx===i?`0 0 0 2px #fff inset, 0 2px 8px ${tp.accent}40`:"0 1px 3px rgba(0,0,0,0.08)"}} title={tp.name}/>
                 ))}
               </div>
             </div>
@@ -912,11 +1008,11 @@ export default function App() {
         {/* User Profile — bottom */}
         <div style={{padding:sideCollapsed?"12px 4px":"12px 16px",borderTop:"1px solid rgba(0,0,0,0.05)",flexShrink:0}}>
           {!sideCollapsed?(
-            <div onClick={()=>navigatePage("settings_profile")} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"8px 8px",borderRadius:12,transition:"all 0.15s ease",background:"transparent"}} onMouseOver={e=>e.currentTarget.style.background="rgba(0,0,0,0.03)"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
-              <Avatar emoji={myProfile.avatar} color={myProfile.color} size={36} border={`2px solid ${myProfile.color}`}/>
+            <div onClick={()=>navigatePage("settings_profile")} style={{display:"flex",alignItems:"center",gap:12,cursor:"pointer",padding:"10px 12px",borderRadius:14,transition:"all 0.15s ease",background:"transparent"}} onMouseOver={e=>e.currentTarget.style.background="rgba(0,0,0,0.03)"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+              <Avatar emoji={myProfile.avatar} color={myProfile.color} size={42} border={`2px solid ${myProfile.color}`}/>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:12,fontWeight:700,color:"#1A1A1A"}}>{myProfile.name}</div>
-                <div style={{fontSize:9.5,color:"#AAAAAA",fontWeight:500}}>마스터 계정</div>
+                <div style={{fontSize:14,fontWeight:700,color:"#1A1A1A"}}>{myProfile.name}</div>
+                <div style={{fontSize:11,color:"#AAAAAA",fontWeight:500}}>마스터 계정</div>
               </div>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#CCCCCC" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
@@ -933,9 +1029,9 @@ export default function App() {
 
         {/* ═══ Tab Bar (항상 표시) ═══ */}
         <div style={{flexShrink:0}}>
-          <div style={{display:"flex",alignItems:"stretch",background:"#FAFBFC",borderBottom:`1px solid ${theme.border}`,height:48,overflow:"hidden"}}>
+          <div style={{display:"flex",alignItems:"stretch",background:"#FAFBFC",borderBottom:`1px solid ${theme.border}`,height:52,overflow:"hidden"}}>
             {/* Home tab - always visible */}
-            <div onClick={()=>{setPage("home");setQuickFilter(null);}} className={`tab-item${page==="home"?" tab-active":""}`} style={{display:"flex",alignItems:"center",gap:5,padding:"0 18px",background:page==="home"?"#fff":"transparent",borderRight:`1px solid ${theme.border}`,cursor:"pointer",fontSize:17,fontWeight:page==="home"?700:500,color:page==="home"?theme.accent:"#9CA3AF",borderBottom:page==="home"?`3px solid ${theme.accent}`:"3px solid transparent",transition:"all 0.15s ease"}}>
+            <div onClick={()=>{setPage("home");setQuickFilter(null);}} className={`tab-item${page==="home"?" tab-active":""}`} style={{display:"flex",alignItems:"center",gap:5,padding:"0 22px",background:page==="home"?"#fff":"transparent",borderRight:`1px solid ${theme.border}`,cursor:"pointer",fontSize:20,fontWeight:page==="home"?700:500,color:page==="home"?theme.accent:"#9CA3AF",borderBottom:page==="home"?`3px solid ${theme.accent}`:"3px solid transparent",transition:"all 0.15s ease"}}>
               🏠
             </div>
             {/* Open tabs (draggable) */}
@@ -944,28 +1040,28 @@ export default function App() {
                 const isActive=page===tab.key;
                 const isDragOver=dragOverIdx===idx&&dragTab!==idx;
                 return(
-                  <div key={tab.key} draggable onDragStart={e=>onTabDragStart(e,idx)} onDragOver={e=>onTabDragOver(e,idx)} onDrop={e=>onTabDrop(e,idx)} onDragEnd={onTabDragEnd} onClick={()=>{setPage(tab.key);setQuickFilter(null);}} className={`tab-item${isActive?" tab-active":""}`} style={{display:"flex",alignItems:"center",gap:7,padding:"0 14px",background:isActive?"#fff":"transparent",borderRight:`1px solid ${theme.border}`,cursor:"grab",fontSize:12.5,fontWeight:isActive?700:500,color:isActive?"#111827":"#888",borderBottom:isActive?`3px solid ${theme.accent}`:"3px solid transparent",borderLeft:isDragOver?`2px solid ${theme.accent}`:"2px solid transparent",whiteSpace:"nowrap",transition:"all 0.15s ease",minWidth:0,maxWidth:200,opacity:dragTab===idx?0.5:1}}>
-                    <span style={{fontSize:14}}>{tab.icon}</span>
+                  <div key={tab.key} draggable onDragStart={e=>onTabDragStart(e,idx)} onDragOver={e=>onTabDragOver(e,idx)} onDrop={e=>onTabDrop(e,idx)} onDragEnd={onTabDragEnd} onClick={()=>{setPage(tab.key);setQuickFilter(null);}} className={`tab-item${isActive?" tab-active":""}`} style={{display:"flex",alignItems:"center",gap:8,padding:"0 18px",background:isActive?"#fff":"transparent",borderRight:`1px solid ${theme.border}`,cursor:"grab",fontSize:14,fontWeight:isActive?700:500,color:isActive?"#111827":"#888",borderBottom:isActive?`3px solid ${theme.accent}`:"3px solid transparent",borderLeft:isDragOver?`2px solid ${theme.accent}`:"2px solid transparent",whiteSpace:"nowrap",transition:"all 0.15s ease",minWidth:0,maxWidth:240,opacity:dragTab===idx?0.5:1}}>
+                    <span style={{fontSize:16}}>{tab.icon}</span>
                     <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{tab.label}</span>
-                    <button onClick={e=>closeTab(tab.key,e)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#9CA3AF",padding:"2px 4px",lineHeight:1,flexShrink:0,borderRadius:4}} onMouseOver={e=>e.target.style.color="#EF4444"} onMouseOut={e=>e.target.style.color="#9CA3AF"}>✕</button>
+                    <button onClick={e=>closeTab(tab.key,e)} style={{background:"none",border:"none",cursor:"pointer",fontSize:14,color:"#9CA3AF",padding:"2px 4px",lineHeight:1,flexShrink:0,borderRadius:4}} onMouseOver={e=>e.target.style.color="#EF4444"} onMouseOut={e=>e.target.style.color="#9CA3AF"}>✕</button>
                   </div>
                 );
               })}
             </div>
             {/* Right: preset + close all + team avatars */}
-            <div style={{display:"flex",alignItems:"center",gap:6,padding:"0 14px",flexShrink:0}}>
-              <button onClick={()=>setPresetModal(true)} title="탭 프리셋" style={{background:"none",border:`1px solid ${theme.border}`,borderRadius:8,cursor:"pointer",fontSize:11,color:"#6B7280",padding:"4px 8px",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap",fontWeight:600}} onMouseOver={e=>{e.currentTarget.style.color=theme.accent;e.currentTarget.style.borderColor=theme.accent;}} onMouseOut={e=>{e.currentTarget.style.color="#6B7280";e.currentTarget.style.borderColor=theme.border;}}>⚡ 프리셋</button>
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 18px",flexShrink:0}}>
+              <button onClick={()=>setPresetModal(true)} title="탭 프리셋" style={{background:"none",border:`1.5px solid ${theme.border}`,borderRadius:10,cursor:"pointer",fontSize:13,color:"#6B7280",padding:"6px 12px",display:"flex",alignItems:"center",gap:5,whiteSpace:"nowrap",fontWeight:600}} onMouseOver={e=>{e.currentTarget.style.color=theme.accent;e.currentTarget.style.borderColor=theme.accent;}} onMouseOut={e=>{e.currentTarget.style.color="#6B7280";e.currentTarget.style.borderColor=theme.border;}}>⚡ 프리셋</button>
               {openTabs.length>1&&(
-                <button onClick={()=>{setOpenTabs([]);setPage("home");setQuickFilter(null);}} title="탭 전체 닫기" style={{background:"none",border:`1px solid ${theme.border}`,borderRadius:8,cursor:"pointer",fontSize:11,color:"#9CA3AF",padding:"4px 8px",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap",fontWeight:600}} onMouseOver={e=>{e.currentTarget.style.color="#EF4444";e.currentTarget.style.borderColor="#FECACA";}} onMouseOut={e=>{e.currentTarget.style.color="#9CA3AF";e.currentTarget.style.borderColor=theme.border;}}>✕ 전체닫기</button>
+                <button onClick={()=>{setOpenTabs([]);setPage("home");setQuickFilter(null);}} title="탭 전체 닫기" style={{background:"none",border:`1.5px solid ${theme.border}`,borderRadius:10,cursor:"pointer",fontSize:13,color:"#9CA3AF",padding:"6px 12px",display:"flex",alignItems:"center",gap:5,whiteSpace:"nowrap",fontWeight:600}} onMouseOver={e=>{e.currentTarget.style.color="#EF4444";e.currentTarget.style.borderColor="#FECACA";}} onMouseOut={e=>{e.currentTarget.style.color="#9CA3AF";e.currentTarget.style.borderColor=theme.border;}}>✕ 전체닫기</button>
               )}
               <div style={{display:"flex",alignItems:"center"}}>
                 {team.filter(t=>t.online).map((t,i)=>(
-                  <div key={t.id} style={{marginLeft:i===0?0:-7,zIndex:10-i}} title={t.name}>
-                    <Avatar emoji={t.avatar} color={t.color} size={30} online={t.online}/>
+                  <div key={t.id} style={{marginLeft:i===0?0:-8,zIndex:10-i}} title={t.name}>
+                    <Avatar emoji={t.avatar} color={t.color} size={34} online={t.online}/>
                   </div>
                 ))}
                 {team.filter(t=>!t.online).length>0&&(
-                  <div style={{marginLeft:-5,width:30,height:30,borderRadius:"50%",background:"#E5E7EB",border:"2px solid #fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"#9CA3AF",zIndex:1}}>+{team.filter(t=>!t.online).length}</div>
+                  <div style={{marginLeft:-6,width:34,height:34,borderRadius:"50%",background:"#E5E7EB",border:"2px solid #fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#9CA3AF",zIndex:1}}>+{team.filter(t=>!t.online).length}</div>
                 )}
               </div>
             </div>
@@ -973,11 +1069,11 @@ export default function App() {
 
           {/* Sub-header: page title + status badges (non-home, non-settings) */}
           {page!=="home"&&!isSettingsPage&&(
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 20px",background:"#fff",borderBottom:"1px solid #F0F0F2"}}>
-              <div style={{display:"flex",alignItems:"center",gap:10}}>
-                <span style={{fontSize:14,fontWeight:800,color:"#1A1A1A"}}>{getPageTitle()}</span>
-                {!isExtraPage&&<span style={{fontSize:10.5,color:"#B0B0B0",fontWeight:600,background:"#F5F5F7",padding:"2px 8px",borderRadius:6}}>{filtered.length}건</span>}
-                {quickFilter&&(<button onClick={()=>setQuickFilter(null)} style={{background:"#F3F4F6",border:"none",borderRadius:5,padding:"2px 8px",fontSize:10,color:"#6B7280",cursor:"pointer",fontWeight:600}}>✕ 필터 해제</button>)}
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 24px",background:"#fff",borderBottom:"1px solid #F0F0F2"}}>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:17,fontWeight:800,color:"#1A1A1A"}}>{getPageTitle()}</span>
+                {!isExtraPage&&<span style={{fontSize:13,color:"#B0B0B0",fontWeight:600,background:"#F5F5F7",padding:"4px 12px",borderRadius:8}}>{filtered.length}건</span>}
+                {quickFilter&&(<button onClick={()=>setQuickFilter(null)} style={{background:"#F3F4F6",border:"none",borderRadius:8,padding:"4px 12px",fontSize:12,color:"#6B7280",cursor:"pointer",fontWeight:600}}>✕ 필터 해제</button>)}
               </div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
                 <Badge color="#22C55E" bg="#22C55E24">🟢 발주모아</Badge>
@@ -1014,25 +1110,66 @@ export default function App() {
             const strokeDash=circumference*(processRate/100);
             const homeFiltered=orders.slice(0,50);
             return(
-            <div style={{minHeight:"100%",background:"#F5F6F8",padding:"20px 24px"}}>
+            <div style={{minHeight:"100%",background:"#F5F6F8",padding:"28px 32px"}}>
 
               {/* ═══ 인사 + 동기화 상태 ═══ */}
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:28}}>
                 <div>
-                  <div style={{fontSize:11,color:"#9CA3AF",fontWeight:500,marginBottom:2}}>{new Date().toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric",weekday:"long"})}</div>
-                  <div style={{fontSize:22,fontWeight:800,color:"#111",letterSpacing:"-0.03em"}}>안녕하세요, {myProfile.name}님</div>
+                  <div style={{fontSize:14,color:"#9CA3AF",fontWeight:500,marginBottom:4}}>{new Date().toLocaleDateString("ko-KR",{year:"numeric",month:"long",day:"numeric",weekday:"long"})}</div>
+                  <div style={{fontSize:28,fontWeight:800,color:"#111",letterSpacing:"-0.03em"}}>안녕하세요, <span style={{color:theme.accent}}>{myProfile.name}</span>님</div>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",borderRadius:8,background:mcpAutoSync?"#F0FDF4":"#F3F4F6",border:mcpAutoSync?"1px solid #BBF7D0":"1px solid #E5E7EB",cursor:"pointer",fontSize:11,fontWeight:600,color:mcpAutoSync?"#16A34A":"#888"}} onClick={()=>setMcpAutoSync(!mcpAutoSync)}>
-                    <div style={{width:6,height:6,borderRadius:"50%",background:mcpAutoSync?"#22C55E":"#D1D5DB"}}/>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",borderRadius:12,background:mcpAutoSync?"#F0FDF4":"#F3F4F6",border:mcpAutoSync?"1.5px solid #BBF7D0":"1.5px solid #E5E7EB",cursor:"pointer",fontSize:14,fontWeight:600,color:mcpAutoSync?"#16A34A":"#888"}} onClick={()=>setMcpAutoSync(!mcpAutoSync)}>
+                    <div style={{width:8,height:8,borderRadius:"50%",background:mcpAutoSync?"#22C55E":"#D1D5DB"}}/>
                     자동동기화 {mcpAutoSync?"ON":"OFF"}
                   </div>
-                  <Btn onClick={mcpManualSync} variant="primary" small>🔄 수동 동기화</Btn>
+                  <Btn onClick={mcpManualSync} variant="primary" style={{padding:"10px 20px",fontSize:14,borderRadius:12}}>🔄 수동 동기화</Btn>
+                  <div style={{position:"relative",display:"flex",alignItems:"center",gap:6}}>
+                    {(()=>{const ch=importChannels.find(c=>c.value===importChannel)||importChannels[0];return<div style={{display:"flex",alignItems:"center",gap:0,borderRadius:12,background:importStatus.running?"#FFFBEB":ch.bg,border:importStatus.running?"1.5px solid #FDE68A":`1.5px solid ${ch.border}`,overflow:"hidden",transition:"all 0.2s"}}>
+                      <div onClick={()=>importStatus.running?setShowImportPanel(true):triggerImport()} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",cursor:importStatus.running?"default":"pointer",fontSize:14,fontWeight:600,color:importStatus.running?"#92400E":ch.color}} onMouseOver={e=>{if(!importStatus.running)e.currentTarget.style.background=ch.hoverBg}} onMouseOut={e=>{e.currentTarget.style.background="transparent"}}>
+                        {importStatus.running?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>⏳</span> {importStatus.statusText||"처리중..."}</>:<>📥 연동 가져오기</>}
+                      </div>
+                      {!importStatus.running&&<div onClick={e=>{e.stopPropagation();setShowChannelMenu(!showChannelMenu)}} style={{padding:"10px 14px",cursor:"pointer",borderLeft:`1.5px solid ${ch.border}`,display:"flex",alignItems:"center",gap:5,color:ch.color,fontSize:13,fontWeight:700}} onMouseOver={e=>e.currentTarget.style.background=ch.hoverBg} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+                        {ch.emoji} {ch.label} <span style={{fontSize:9,opacity:0.5}}>▼</span>
+                      </div>}
+                      {importStatus.running&&<div onClick={stopImport} style={{padding:"10px 14px",cursor:"pointer",borderLeft:"1.5px solid #FDE68A",display:"flex",alignItems:"center",gap:5,color:"#DC2626",fontSize:13,fontWeight:700}} onMouseOver={e=>e.currentTarget.style.background="#FEF2F2"} onMouseOut={e=>e.currentTarget.style.background="transparent"} title="중지">
+                        ■ 중지
+                      </div>}
+                    </div>})()}
+                    {showChannelMenu&&!importStatus.running&&<div style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",overflow:"hidden",zIndex:100,minWidth:170,padding:"4px 0"}}>
+                      {importChannels.map(c=>{const sel=importChannel===c.value;return<div key={c.value} onClick={()=>{setImportChannel(c.value);setShowChannelMenu(false)}} style={{padding:"11px 16px",fontSize:13,fontWeight:sel?700:500,color:sel?c.color:"#374151",background:sel?c.bg:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.1s",borderLeft:sel?`3px solid ${c.color}`:"3px solid transparent"}} onMouseOver={e=>{e.currentTarget.style.background=sel?c.bg:"#F9FAFB";e.currentTarget.style.color=c.color}} onMouseOut={e=>{e.currentTarget.style.background=sel?c.bg:"#fff";e.currentTarget.style.color=sel?c.color:"#374151"}}>
+                        <span style={{fontSize:15}}>{c.emoji}</span><span>{c.label}</span>{sel&&<span style={{marginLeft:"auto",color:c.color,fontSize:14}}>✓</span>}
+                      </div>})}
+                    </div>}
+                    {importStatus.logs.length>0&&!importStatus.running&&<div onClick={()=>setShowImportPanel(!showImportPanel)} style={{width:32,height:32,borderRadius:10,background:"#F3F4F6",border:"1.5px solid #E5E7EB",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",fontSize:14}} title="로그 보기">📋</div>}
+                  </div>
                 </div>
               </div>
 
+              {/* ═══ 연동 가져오기 로그 패널 ═══ */}
+              {showImportPanel&&<div style={{background:"#111827",borderRadius:14,padding:"16px 20px",marginBottom:18,border:"1.5px solid #374151",position:"relative"}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{fontSize:15,fontWeight:700,color:"#F9FAFB"}}>📋 연동 가져오기 로그</span>
+                    {importStatus.running&&<span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:"#22C55E",animation:"pulse 1.5s infinite"}}/>}
+                    {importStatus.channel&&<span style={{fontSize:12,color:"#9CA3AF",background:"#1F2937",padding:"2px 10px",borderRadius:8,fontWeight:600}}>{importChannels.find(c=>c.value===importStatus.channel)?.label||importStatus.channel}</span>}
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    {importStatus.result&&<span style={{fontSize:12,padding:"3px 10px",borderRadius:8,fontWeight:600,background:importStatus.result.success?"#065F46":"#7F1D1D",color:importStatus.result.success?"#6EE7B7":"#FCA5A5"}}>{importStatus.result.success?`${importStatus.result.count||0}건 완료`:`오류: ${importStatus.result.error||""}`}</span>}
+                    <div onClick={()=>setShowImportPanel(false)} style={{cursor:"pointer",color:"#6B7280",fontSize:18,lineHeight:1}}>✕</div>
+                  </div>
+                </div>
+                <div style={{maxHeight:180,overflowY:"auto",fontSize:13,fontFamily:"'Consolas','Courier New',monospace",lineHeight:1.7}}>
+                  {importStatus.logs.length===0?<div style={{color:"#6B7280",padding:"8px 0"}}>아직 로그가 없습니다. 연동 가져오기를 실행해주세요.</div>:
+                  importStatus.logs.map((log,i)=><div key={i} style={{color:log.msg.includes("오류")?"#FCA5A5":log.msg.includes("완료")?"#6EE7B7":log.msg.includes("필요")?"#FCD34D":"#D1D5DB",display:"flex",gap:10}}>
+                    <span style={{color:"#4B5563",flexShrink:0}}>{new Date(log.time).toLocaleTimeString("ko-KR")}</span>
+                    <span>{log.msg}</span>
+                  </div>)}
+                </div>
+              </div>}
+
               {/* ═══ 요약 카드 (한 줄) ═══ */}
-              <div style={{display:"grid",gridTemplateColumns:"repeat(7, 1fr)",gap:10,marginBottom:18}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(7, 1fr)",gap:14,marginBottom:24}}>
                 {[
                   {label:"전체 주문",value:counts.total,icon:"📦",color:"#374151",bg:"#fff"},
                   {label:"발주모아",value:counts.bj,icon:"🟢",color:"#22C55E",bg:"#F0FDF4"},
@@ -1042,26 +1179,26 @@ export default function App() {
                   {label:"송장 미등록",value:counts.noInvoice,icon:"📝",color:"#F59E0B",bg:"#FFFBEB"},
                   {label:"처리 완료",value:processedCount,icon:"✅",color:"#10B981",bg:"#F0FDF4"},
                 ].map((c,i)=>(
-                  <div key={i} className="card-hover" style={{background:c.bg,borderRadius:12,padding:"14px 14px",border:"1px solid #E5E7EB",cursor:"pointer"}} onClick={()=>{if(c.label==="발주모아")handleQuickFilter("bj");else if(c.label==="플렉스지")handleQuickFilter("fg");else if(c.label==="양쪽 매칭")handleQuickFilter("unordered");else if(c.label==="미발주")handleQuickFilter("poUnreg");else navigatePage("order_all");}}>
-                    <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:6}}>
-                      <span style={{fontSize:13}}>{c.icon}</span>
-                      <span style={{fontSize:10,color:"#6B7280",fontWeight:600}}>{c.label}</span>
+                  <div key={i} className="card-hover" style={{background:c.bg,borderRadius:16,padding:"20px 18px",border:"1.5px solid #E5E7EB",cursor:"pointer",transition:"all 0.15s",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}} onClick={()=>{if(c.label==="발주모아")handleQuickFilter("bj");else if(c.label==="플렉스지")handleQuickFilter("fg");else if(c.label==="양쪽 매칭")handleQuickFilter("unordered");else if(c.label==="미발주")handleQuickFilter("poUnreg");else navigatePage("order_all");}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
+                      <span style={{fontSize:18}}>{c.icon}</span>
+                      <span style={{fontSize:13,color:"#6B7280",fontWeight:600}}>{c.label}</span>
                     </div>
-                    <div style={{fontSize:20,fontWeight:800,color:c.color,letterSpacing:"-0.02em"}}>{c.value}<span style={{fontSize:11,fontWeight:600}}>건</span></div>
+                    <div style={{fontSize:28,fontWeight:800,color:c.color,letterSpacing:"-0.02em"}}>{c.value.toLocaleString()}<span style={{fontSize:14,fontWeight:600,marginLeft:2}}>건</span></div>
                   </div>
                 ))}
               </div>
 
               {/* ═══ 업무 흐름 카드 (발주모아 + 플렉스지 한 줄) ═══ */}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:18}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18,marginBottom:24}}>
                 {/* 발주모아 업무 */}
-                <div style={{background:"#fff",borderRadius:14,padding:"16px 18px",border:"1px solid #E5E7EB"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-                    <div style={{width:20,height:20,borderRadius:5,background:"#22C55E",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:9,color:"#fff",fontWeight:800}}>B</span></div>
-                    <span style={{fontSize:13,fontWeight:700,color:"#111"}}>발주모아</span>
-                    <span style={{fontSize:10,color:"#9CA3AF",marginLeft:"auto"}}>{counts.bj}건</span>
+                <div style={{background:"#fff",borderRadius:18,padding:"24px 24px",border:"1.5px solid #E5E7EB",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+                    <div style={{width:28,height:28,borderRadius:8,background:"#22C55E",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:13,color:"#fff",fontWeight:800}}>B</span></div>
+                    <span style={{fontSize:17,fontWeight:700,color:"#111"}}>발주모아</span>
+                    <span style={{fontSize:14,color:"#9CA3AF",fontWeight:600,marginLeft:"auto"}}>{counts.bj.toLocaleString()}건</span>
                   </div>
-                  <div style={{display:"flex",gap:6}}>
+                  <div style={{display:"flex",gap:10}}>
                     {[
                       {icon:"📥",label:"주문확인",count:counts.신규등록+counts.발주서생성,key:"po_inbox"},
                       {icon:"📋",label:"발주서생성",count:counts.unordered,key:"supply_process"},
@@ -1069,33 +1206,33 @@ export default function App() {
                       {icon:"📩",label:"회신확인",count:counts.회신파일생성,key:"supply_confirmed"},
                       {icon:"📝",label:"송장등록",count:counts.noInvoice,key:"inv_register"},
                     ].map(s=>(
-                      <div key={s.key} onClick={()=>navigatePage(s.key)} style={{flex:1,textAlign:"center",padding:"10px 4px",borderRadius:10,background:"#F9FAFB",border:"1px solid #F0F0F2",cursor:"pointer",transition:"all 0.12s"}} className="card-hover">
-                        <div style={{fontSize:18,marginBottom:4}}>{s.icon}</div>
-                        <div style={{fontSize:9,color:"#555",fontWeight:600,marginBottom:4}}>{s.label}</div>
-                        <div style={{fontSize:15,fontWeight:800,color:"#111"}}>{s.count}</div>
+                      <div key={s.key} onClick={()=>navigatePage(s.key)} style={{flex:1,textAlign:"center",padding:"16px 6px",borderRadius:14,background:"#F9FAFB",border:"1.5px solid #F0F0F2",cursor:"pointer",transition:"all 0.12s"}} className="card-hover">
+                        <div style={{fontSize:24,marginBottom:8}}>{s.icon}</div>
+                        <div style={{fontSize:12,color:"#555",fontWeight:600,marginBottom:6}}>{s.label}</div>
+                        <div style={{fontSize:20,fontWeight:800,color:"#111"}}>{s.count.toLocaleString()}</div>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* 플렉스지 업무 */}
-                <div style={{background:"#fff",borderRadius:14,padding:"16px 18px",border:"1px solid #E5E7EB"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
-                    <div style={{width:20,height:20,borderRadius:5,background:"#3B82F6",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:9,color:"#fff",fontWeight:800}}>F</span></div>
-                    <span style={{fontSize:13,fontWeight:700,color:"#111"}}>플렉스지</span>
-                    <span style={{fontSize:10,color:"#9CA3AF",marginLeft:"auto"}}>{counts.fg}건</span>
+                <div style={{background:"#fff",borderRadius:18,padding:"24px 24px",border:"1.5px solid #E5E7EB",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+                    <div style={{width:28,height:28,borderRadius:8,background:"#3B82F6",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:13,color:"#fff",fontWeight:800}}>F</span></div>
+                    <span style={{fontSize:17,fontWeight:700,color:"#111"}}>플렉스지</span>
+                    <span style={{fontSize:14,color:"#9CA3AF",fontWeight:600,marginLeft:"auto"}}>{counts.fg.toLocaleString()}건</span>
                   </div>
-                  <div style={{display:"flex",gap:6}}>
+                  <div style={{display:"flex",gap:10}}>
                     {[
                       {icon:"🛒",label:"주문확인",count:counts.fg,key:"order_new"},
                       {icon:"💰",label:"입금확인",count:counts.미입금,key:"order_all"},
                       {icon:"🔢",label:"송장입력",count:counts.noInvoice,key:"inv_register"},
                       {icon:"🚚",label:"배송처리",count:counts.회신파일생성,key:"order_shipping"},
                     ].map(s=>(
-                      <div key={s.key} onClick={()=>navigatePage(s.key)} style={{flex:1,textAlign:"center",padding:"10px 4px",borderRadius:10,background:"#F9FAFB",border:"1px solid #F0F0F2",cursor:"pointer",transition:"all 0.12s"}} className="card-hover">
-                        <div style={{fontSize:18,marginBottom:4}}>{s.icon}</div>
-                        <div style={{fontSize:9,color:"#555",fontWeight:600,marginBottom:4}}>{s.label}</div>
-                        <div style={{fontSize:15,fontWeight:800,color:"#111"}}>{s.count}</div>
+                      <div key={s.key} onClick={()=>navigatePage(s.key)} style={{flex:1,textAlign:"center",padding:"16px 6px",borderRadius:14,background:"#F9FAFB",border:"1.5px solid #F0F0F2",cursor:"pointer",transition:"all 0.12s"}} className="card-hover">
+                        <div style={{fontSize:24,marginBottom:8}}>{s.icon}</div>
+                        <div style={{fontSize:12,color:"#555",fontWeight:600,marginBottom:6}}>{s.label}</div>
+                        <div style={{fontSize:20,fontWeight:800,color:"#111"}}>{s.count.toLocaleString()}</div>
                       </div>
                     ))}
                   </div>
@@ -1103,80 +1240,82 @@ export default function App() {
               </div>
 
               {/* ═══ 빠른 액션 + 처리율 ═══ */}
-              <div style={{display:"flex",gap:14,marginBottom:18}}>
+              <div style={{display:"flex",gap:18,marginBottom:24}}>
                 {/* 빠른 액션 */}
-                <div style={{flex:1,background:"#fff",borderRadius:14,padding:"16px 18px",border:"1px solid #E5E7EB"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:"#111",marginBottom:12}}>⚡ 빠른 실행</div>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:8}}>
+                <div style={{flex:1,background:"#fff",borderRadius:18,padding:"24px 24px",border:"1.5px solid #E5E7EB",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                  <div style={{fontSize:16,fontWeight:700,color:"#111",marginBottom:16}}>⚡ 빠른 실행</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(3, 1fr)",gap:12}}>
                     {[
                       {icon:"📨",label:"발주서 전송",action:handleSendPO,color:"#059669",bg:"#F0FDF4"},
                       {icon:"📝",label:"송장 등록",action:()=>navigatePage("inv_register"),color:"#D97706",bg:"#FFFBEB"},
                       {icon:"📋",label:"발주처리",action:()=>navigatePage("supply_process"),color:"#7C3AED",bg:"#F5F3FF"},
-                      {icon:"📥",label:"엑셀 다운로드",action:simExcel,color:"#374151",bg:"#F3F4F6"},
+                      {icon:"📥",label:"발주 연동 가져오기",action:()=>{setShowImportPanel(true);triggerImport();},color:"#059669",bg:"#ECFDF5",highlight:true},
                       {icon:"▶",label:"워크플로우",action:()=>runWorkflow(0),color:"#2563EB",bg:"#EFF6FF"},
                       {icon:"🔄",label:"데이터 동기화",action:autoFull,color:"#0891B2",bg:"#ECFEFF"},
                     ].map((a,i)=>(
-                      <div key={i} onClick={a.action} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",borderRadius:10,background:a.bg,cursor:"pointer",transition:"all 0.12s",border:"1px solid transparent"}} onMouseOver={e=>e.currentTarget.style.borderColor="#D1D5DB"} onMouseOut={e=>e.currentTarget.style.borderColor="transparent"}>
-                        <span style={{fontSize:16}}>{a.icon}</span>
-                        <span style={{fontSize:11,fontWeight:600,color:a.color}}>{a.label}</span>
+                      <div key={i} onClick={a.action} style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",borderRadius:14,background:a.bg,cursor:"pointer",transition:"all 0.12s",border:a.highlight?"2px solid #22C55E":"1.5px solid transparent",boxShadow:a.highlight?"0 2px 8px rgba(34,197,94,0.15)":"none"}} onMouseOver={e=>e.currentTarget.style.borderColor=a.highlight?"#16A34A":"#D1D5DB"} onMouseOut={e=>e.currentTarget.style.borderColor=a.highlight?"#22C55E":"transparent"}>
+                        <span style={{fontSize:22}}>{a.icon}</span>
+                        <span style={{fontSize:14,fontWeight:a.highlight?700:600,color:a.color}}>{a.label}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 {/* 처리율 */}
-                <div style={{width:200,background:"#fff",borderRadius:14,padding:"16px 18px",border:"1px solid #E5E7EB",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-                  <svg width="100" height="100" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="44" fill="none" stroke="#F0F0F2" strokeWidth="8"/>
-                    <circle cx="50" cy="50" r="44" fill="none" stroke={theme.accent} strokeWidth="8" strokeLinecap="round" strokeDasharray={`${strokeDash} ${circumference}`} transform="rotate(-90 50 50)"/>
-                    <text x="50" y="46" textAnchor="middle" dominantBaseline="central" fontSize="22" fontWeight="900" fill={theme.accent}>{processRate}%</text>
-                    <text x="50" y="65" textAnchor="middle" fontSize="9" fill="#999" fontWeight="500">처리율</text>
+                <div style={{width:240,background:"#fff",borderRadius:18,padding:"24px 24px",border:"1.5px solid #E5E7EB",boxShadow:"0 1px 3px rgba(0,0,0,0.04)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+                  <svg width="130" height="130" viewBox="0 0 130 130">
+                    <circle cx="65" cy="65" r="56" fill="none" stroke="#F0F0F2" strokeWidth="10"/>
+                    <circle cx="65" cy="65" r="56" fill="none" stroke={theme.accent} strokeWidth="10" strokeLinecap="round" strokeDasharray={`${2*Math.PI*56*(processRate/100)} ${2*Math.PI*56}`} transform="rotate(-90 65 65)"/>
+                    <text x="65" y="58" textAnchor="middle" dominantBaseline="central" fontSize="30" fontWeight="900" fill={theme.accent}>{processRate}%</text>
+                    <text x="65" y="82" textAnchor="middle" fontSize="12" fill="#999" fontWeight="600">처리율</text>
                   </svg>
-                  <div style={{fontSize:11,color:"#777",fontWeight:600,marginTop:4}}>{processedCount} / {counts.total}건</div>
+                  <div style={{fontSize:14,color:"#777",fontWeight:600,marginTop:8}}>{processedCount.toLocaleString()} / {counts.total.toLocaleString()}건</div>
                 </div>
               </div>
 
               {/* ═══ 최근 주문 (간소화 테이블) ═══ */}
-              <div style={{background:"#fff",borderRadius:14,border:"1px solid #E5E7EB",overflow:"hidden"}}>
-                <div style={{padding:"12px 16px",borderBottom:"1px solid #E5E7EB",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:13,fontWeight:700,color:"#111"}}>📋 최근 주문</span>
-                    <span style={{fontSize:10,color:"#9CA3AF",fontWeight:600,background:"#F3F4F6",padding:"2px 8px",borderRadius:6}}>{orders.length}건</span>
+              <div style={{background:"#fff",borderRadius:18,border:"1.5px solid #E5E7EB",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
+                <div style={{padding:"18px 24px",borderBottom:"1px solid #E5E7EB",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <span style={{fontSize:17,fontWeight:700,color:"#111"}}>📋 최근 주문</span>
+                    <span style={{fontSize:13,color:"#9CA3AF",fontWeight:600,background:"#F3F4F6",padding:"4px 12px",borderRadius:8}}>{orders.length.toLocaleString()}건</span>
                   </div>
-                  <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <Btn onClick={()=>navigatePage("order_all")} variant="outline" small>전체 보기 →</Btn>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <Btn onClick={refresh} variant="outline" disabled={processing} style={{padding:"8px 16px",fontSize:13}}>🔄 새로고침</Btn>
+                    <Btn onClick={()=>navigatePage("order_all")} variant="outline" style={{padding:"8px 16px",fontSize:13}}>전체 보기 →</Btn>
                   </div>
                 </div>
-                <div style={{overflowX:"auto",maxHeight:340}}>
+                <div style={{overflowX:"auto",maxHeight:440}}>
                   <table style={{width:"100%",borderCollapse:"collapse"}}>
                     <thead><tr>
-                      <th style={TH}>No</th><th style={TH}>사이트</th><th style={{...TH,minWidth:100}}>주문번호</th><th style={{...TH,minWidth:160}}>상품정보</th><th style={TH}>공급사</th><th style={TH}>주문자</th><th style={{...TH,textAlign:"right"}}>금액</th><th style={{...TH,textAlign:"center"}}>발모상태</th><th style={{...TH,textAlign:"center"}}>플지상태</th>
+                      <th style={{...TH,padding:"12px 10px",fontSize:12}}>No</th><th style={{...TH,padding:"12px 10px",fontSize:12}}>사이트</th><th style={{...TH,padding:"12px 10px",fontSize:12,minWidth:110}}>주문번호</th><th style={{...TH,padding:"12px 10px",fontSize:12,minWidth:200}}>상품정보</th><th style={{...TH,padding:"12px 10px",fontSize:12}}>판매사</th><th style={{...TH,padding:"12px 10px",fontSize:12}}>공급사</th><th style={{...TH,padding:"12px 10px",fontSize:12}}>주문자</th><th style={{...TH,padding:"12px 10px",fontSize:12,textAlign:"right"}}>금액</th><th style={{...TH,padding:"12px 10px",fontSize:12,textAlign:"center"}}>발모상태</th><th style={{...TH,padding:"12px 10px",fontSize:12,textAlign:"center"}}>플지상태</th>
                     </tr></thead>
                     <tbody>
-                      {homeFiltered.length===0?(<tr><td colSpan={20} style={{padding:40,textAlign:"center",color:"#9CA3AF",fontSize:12}}>주문 데이터를 불러오는 중...</td></tr>):homeFiltered.map((o,i)=>{
+                      {homeFiltered.length===0?(<tr><td colSpan={20} style={{padding:50,textAlign:"center",color:"#9CA3AF",fontSize:14}}>주문 데이터를 불러오는 중...</td></tr>):homeFiltered.map((o,i)=>{
                         const siteConf = o.site==="both"?{name:"양쪽",short:"양쪽",color:"#8B5CF6",icon:"🔗"}:SITES[o.site];
                         const bjSt = ORDER_STATUS[o.bjStatus||""];
                         const fgSt = ORDER_STATUS[o.orderStatus];
-                        return(<tr key={o.id} style={{borderTop:"1px solid #F3F4F6"}} onClick={()=>setDetailModal(o)}>
-                          <td style={{...TD,fontSize:10,color:"#9CA3AF"}}>{o.no}</td>
-                          <td style={TD}><Badge color={siteConf.color} bg={`${siteConf.color}18`}>{siteConf.icon}{siteConf.short}</Badge></td>
-                          <td style={{...TD,cursor:"pointer"}}>
-                            <span style={{fontWeight:600,color:"#6C63FF",fontSize:10}}>{o.id.slice(-15)}</span>
+                        return(<tr key={o.id} style={{borderTop:"1px solid #F3F4F6",cursor:"pointer"}} onClick={()=>setDetailModal(o)} onMouseOver={e=>e.currentTarget.style.background="#FAFBFF"} onMouseOut={e=>e.currentTarget.style.background="#fff"}>
+                          <td style={{...TD,padding:"10px 10px",fontSize:12,color:"#9CA3AF"}}>{o.no}</td>
+                          <td style={{...TD,padding:"10px 10px"}}><Badge color={siteConf.color} bg={`${siteConf.color}18`}>{siteConf.icon}{siteConf.short}</Badge></td>
+                          <td style={{...TD,padding:"10px 10px"}}>
+                            <span style={{fontWeight:600,color:"#6C63FF",fontSize:12}}>{o.id.slice(-15)}</span>
                           </td>
-                          <td style={{...TD,maxWidth:180}}>
-                            <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:500,fontSize:11}}>{o.product}</div>
+                          <td style={{...TD,padding:"10px 10px",maxWidth:220}}>
+                            <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:500,fontSize:13}}>{o.product}</div>
                           </td>
-                          <td style={{...TD,fontSize:10.5}}>{o.supplier}</td>
-                          <td style={{...TD,fontSize:11}}>{o.buyer}</td>
-                          <td style={{...TD,textAlign:"right",fontWeight:700,fontSize:11}}>₩{o.total.toLocaleString()}</td>
-                          <td style={{...TD,textAlign:"center"}}>{bjSt?<Badge color={bjSt.color} bg={bjSt.bg}>{bjSt.label}</Badge>:<span style={{color:"#D1D5DB",fontSize:10}}>—</span>}</td>
-                          <td style={{...TD,textAlign:"center"}}>{fgSt?<Badge color={fgSt.color} bg={fgSt.bg}>{fgSt.label}</Badge>:<span style={{color:"#D1D5DB",fontSize:10}}>—</span>}</td>
+                          <td style={{...TD,padding:"10px 10px",fontSize:12,color:"#6B7280"}}>{o.seller}</td>
+                          <td style={{...TD,padding:"10px 10px",fontSize:12}}>{o.supplier}</td>
+                          <td style={{...TD,padding:"10px 10px",fontSize:13}}>{o.buyer}</td>
+                          <td style={{...TD,padding:"10px 10px",textAlign:"right",fontWeight:700,fontSize:13}}>₩{(o.total||0).toLocaleString()}</td>
+                          <td style={{...TD,padding:"10px 10px",textAlign:"center"}}>{bjSt?<Badge color={bjSt.color} bg={bjSt.bg}>{bjSt.label}</Badge>:<span style={{color:"#D1D5DB",fontSize:12}}>—</span>}</td>
+                          <td style={{...TD,padding:"10px 10px",textAlign:"center"}}>{fgSt?<Badge color={fgSt.color} bg={fgSt.bg}>{fgSt.label}</Badge>:<span style={{color:"#D1D5DB",fontSize:12}}>—</span>}</td>
                         </tr>);
                       })}
                     </tbody>
                   </table>
                 </div>
-                <div style={{padding:"8px 14px",borderTop:"1px solid #F3F4F6",display:"flex",justifyContent:"space-between",fontSize:10,color:"#6B7280"}}>
+                <div style={{padding:"12px 24px",borderTop:"1px solid #F3F4F6",display:"flex",justifyContent:"space-between",fontSize:13,color:"#6B7280"}}>
                   <span>최근 {homeFiltered.length}건 표시</span>
                   <span>합계: <b style={{color:"#111"}}>₩{homeFiltered.reduce((a,b)=>a+b.total,0).toLocaleString()}</b></span>
                 </div>
@@ -1562,6 +1701,9 @@ export default function App() {
                     <span style={{color:"#9CA3AF",fontSize:11}}>~</span>
                     <input type="date" value={advFilters.dateTo} onChange={e=>setAdvFilters(p=>({...p,dateTo:e.target.value}))} style={{height:32,border:"1px solid #D1D5DB",borderRadius:6,padding:"0 10px",fontSize:12,color:"#111827",outline:"none",cursor:"pointer",width:140}}/>
                     <span style={{width:1,height:18,background:"#E5E7EB"}}/>
+                    <Btn onClick={refresh} variant="primary" small disabled={processing} style={{height:32}}>{processing?"검색중...":"🔍 검색하기"}</Btn>
+                    <Btn onClick={refresh} variant="outline" small disabled={processing} style={{height:32}}>🔄 동기화</Btn>
+                    <span style={{width:1,height:18,background:"#E5E7EB"}}/>
                     <Select value={advFilters.bjStatus} onChange={e=>setAdvFilters(p=>({...p,bjStatus:e.target.value}))} style={{width:100,height:32,fontSize:11}}><option value="all">발모상태</option><option value="신규등록">신규등록</option><option value="발주서생성">발주서생성</option><option value="회신파일생성">회신파일생성</option><option value="송장등록완료">송장등록완료</option></Select>
                     <Select value={advFilters.fgStatus} onChange={e=>setAdvFilters(p=>({...p,fgStatus:e.target.value}))} style={{width:100,height:32,fontSize:11}}><option value="all">플지상태</option><option value="미입금">미입금</option><option value="입금확인">입금확인</option><option value="배송준비">배송준비</option><option value="배송중">배송중</option><option value="배송완료">배송완료</option></Select>
                   </div>
@@ -1621,7 +1763,7 @@ export default function App() {
                     {/* 검색/초기화 */}
                     <div style={{display:"flex",justifyContent:"center",gap:8,paddingTop:10,borderTop:"1px solid #F3F4F6"}}>
                       <button onClick={()=>showToast("검색 조건 적용","info")} style={{padding:"8px 28px",borderRadius:10,border:"none",background:"#6C63FF",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔍 검색</button>
-                      <button onClick={()=>{setAdvFilters({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:"2026-03-06",dateTo:"2026-03-06",buyer:"",product:"",invoiceYn:"all",dateType:"order_date"});setSellerFilter("all");setSiteFilter("all");setSearch("");showToast("초기화 완료");}} style={{padding:"8px 28px",borderRadius:10,border:"1px solid #DDD6FE",background:"#F0EDFF",color:"#374151",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔄 초기화</button>
+                      <button onClick={()=>{setAdvFilters({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:new Date().toISOString().slice(0,10),dateTo:new Date().toISOString().slice(0,10),buyer:"",product:"",invoiceYn:"all",dateType:"order_date"});setSellerFilter("all");setSiteFilter("all");setSearch("");showToast("초기화 완료");}} style={{padding:"8px 28px",borderRadius:10,border:"1px solid #DDD6FE",background:"#F0EDFF",color:"#374151",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔄 초기화</button>
                     </div>
                   </div>
                 )}
@@ -1657,12 +1799,12 @@ export default function App() {
                   <table style={{width:"100%",borderCollapse:"collapse"}}>
                     <thead><tr>
                       <th style={{...TH,width:32,textAlign:"center"}}><input type="checkbox" checked={selectAll} onChange={toggleAll} style={{width:14,height:14,cursor:"pointer",accentColor:"#6C63FF"}}/></th>
-                      <th style={TH}>No</th><th style={TH}>사이트</th><th style={{...TH,minWidth:110}}>주문번호</th><th style={{...TH,minWidth:200}}>상품정보</th><th style={TH}>공급사</th><th style={TH}>송금자/주문자</th><th style={{...TH,textAlign:"right",minWidth:120}}>금액</th><th style={{...TH,textAlign:"center"}}>🟢발모상태</th><th style={{...TH,textAlign:"center"}}>결제/플지상태</th><th style={{...TH,textAlign:"center"}}>매칭</th>
+                      <th style={TH}>No</th><th style={TH}>사이트</th><th style={{...TH,minWidth:110}}>주문번호</th><th style={{...TH,minWidth:200}}>상품정보</th><th style={TH}>판매사</th><th style={TH}>공급사</th><th style={TH}>주문자/수령인</th><th style={{...TH,minWidth:140}}>배송지</th><th style={{...TH,textAlign:"right",minWidth:120}}>금액</th><th style={{...TH,textAlign:"center"}}>🟢발모상태</th><th style={{...TH,textAlign:"center"}}>결제/플지상태</th><th style={{...TH,textAlign:"center"}}>매칭</th>
                       {(isInvoicePage||quickFilter==="noInvoice")&&(<><th style={TH}>택배사</th><th style={TH}>송장번호</th></>)}
                       <th style={TH}>일시</th>
                     </tr></thead>
                     <tbody>
-                      {filtered.length===0?(<tr><td colSpan={20} style={{padding:50,textAlign:"center",color:"#9CA3AF",fontSize:13}}>해당 조건의 주문이 없습니다</td></tr>):filtered.slice(0,100).map((o,i)=>{
+                      {filtered.length===0?(<tr><td colSpan={20} style={{padding:50,textAlign:"center",color:"#9CA3AF",fontSize:13}}>해당 조건의 주문이 없습니다</td></tr>):paginatedOrders.map((o,i)=>{
                         const siteConf = o.site==="both"?{name:"양쪽",short:"양쪽",color:"#8B5CF6",icon:"🔗"}:SITES[o.site];
                         const bjSt = ORDER_STATUS[o.bjStatus||""];
                         const fgSt = ORDER_STATUS[o.orderStatus];
@@ -1679,15 +1821,21 @@ export default function App() {
                             <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:500,fontSize:11.5}}>{o.product}</div>
                             {o.option&&<div style={{fontSize:9,color:"#6B7280",marginTop:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{o.option}</div>}
                           </td>
+                          <td style={{...TD,fontSize:10.5,color:"#6B7280"}}>{o.seller}</td>
                           <td style={{...TD,fontSize:11}}>{o.supplier}</td>
                           <td style={TD}>
                             <div style={{fontWeight:500,fontSize:11.5}}>{o.buyer}</div>
                             {o.phone&&<div style={{fontSize:9,color:"#9CA3AF"}}>{o.phone}</div>}
                           </td>
+                          <td style={{...TD,maxWidth:160}}>
+                            {o.zip&&<span style={{fontSize:9,color:"#9CA3AF"}}>[{o.zip}] </span>}
+                            <span style={{fontSize:10,color:"#374151",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",display:"inline-block",maxWidth:140,verticalAlign:"middle"}}>{o.address||"—"}</span>
+                          </td>
                           <td style={{...TD,textAlign:"right"}}>
-                            <div style={{fontWeight:700,fontSize:11.5}}>₩{o.price.toLocaleString()}</div>
-                            {o.shippingFee>0&&<div style={{fontSize:9,color:"#9CA3AF"}}>배송 ₩{o.shippingFee.toLocaleString()}</div>}
-                            <div style={{fontSize:10,fontWeight:800,color:"#111"}}>₩{o.total.toLocaleString()}</div>
+                            {o.consumerPrice>0&&<div style={{fontSize:9,color:"#9CA3AF"}}>소비자가 <span style={{color:"#6B7280"}}>₩{o.consumerPrice.toLocaleString()}</span></div>}
+                            <div style={{fontSize:10,color:"#374151"}}>판매가 <span style={{fontWeight:700}}>₩{(o.price||0).toLocaleString()}</span></div>
+                            <div style={{fontSize:10,color:"#6B7280"}}>공급가 <span style={{fontWeight:600}}>₩{(o.supplyPrice||0).toLocaleString()}</span></div>
+                            {o.shippingFee>0&&<div style={{fontSize:9,color:"#9CA3AF"}}>배송비 ₩{o.shippingFee.toLocaleString()}</div>}
                           </td>
                           <td style={{...TD,textAlign:"center"}}>{bjSt?<Badge color={bjSt.color} bg={bjSt.bg}><Dot color={bjSt.color}/>{bjSt.label}</Badge>:<span style={{color:"#D1D5DB",fontSize:10}}>—</span>}</td>
                           <td style={{...TD,textAlign:"center"}}>
@@ -1701,9 +1849,22 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
-                <div style={{padding:"8px 14px",borderTop:"1px solid #F3F4F6",display:"flex",justifyContent:"space-between",fontSize:10.5,color:"#6B7280"}}>
+                <div style={{padding:"8px 14px",borderTop:"1px solid #F3F4F6",display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:10.5,color:"#6B7280",flexWrap:"wrap",gap:6}}>
                   <span>{filtered.length}건 (전체 {orders.length}건)</span>
-                  <span>합계: <b style={{color:"#111827"}}>₩{filtered.reduce((a,b)=>a+b.total,0).toLocaleString()}</b></span>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}>
+                    <select value={pageSize} onChange={e=>{setPageSize(Number(e.target.value));setCurrentPage(1);}} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #E5E7EB",fontSize:10.5,cursor:"pointer"}}>
+                      {[50,100,200,500,1000,2000].map(n=><option key={n} value={n}>{n}개씩</option>)}
+                    </select>
+                    <button onClick={()=>setCurrentPage(1)} disabled={safeCurrentPage<=1} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #E5E7EB",background:safeCurrentPage<=1?"#F9FAFB":"#fff",cursor:safeCurrentPage<=1?"default":"pointer",fontSize:10}}>«</button>
+                    <button onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} disabled={safeCurrentPage<=1} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #E5E7EB",background:safeCurrentPage<=1?"#F9FAFB":"#fff",cursor:safeCurrentPage<=1?"default":"pointer",fontSize:10}}>‹</button>
+                    {(()=>{const pages=[];let start=Math.max(1,safeCurrentPage-4),end=Math.min(totalPages,start+9);if(end-start<9)start=Math.max(1,end-9);for(let p=start;p<=end;p++)pages.push(p);return pages.map(p=>(
+                      <button key={p} onClick={()=>setCurrentPage(p)} style={{padding:"2px 8px",borderRadius:4,border:p===safeCurrentPage?"1.5px solid #6C63FF":"1px solid #E5E7EB",background:p===safeCurrentPage?"#F0EDFF":"#fff",color:p===safeCurrentPage?"#6C63FF":"#6B7280",fontWeight:p===safeCurrentPage?700:400,cursor:"pointer",fontSize:10.5,minWidth:28}}>{p}</button>
+                    ));})()}
+                    <button onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} disabled={safeCurrentPage>=totalPages} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #E5E7EB",background:safeCurrentPage>=totalPages?"#F9FAFB":"#fff",cursor:safeCurrentPage>=totalPages?"default":"pointer",fontSize:10}}>›</button>
+                    <button onClick={()=>setCurrentPage(totalPages)} disabled={safeCurrentPage>=totalPages} style={{padding:"2px 6px",borderRadius:4,border:"1px solid #E5E7EB",background:safeCurrentPage>=totalPages?"#F9FAFB":"#fff",cursor:safeCurrentPage>=totalPages?"default":"pointer",fontSize:10}}>»</button>
+                    <span style={{marginLeft:4,fontSize:10,color:"#9CA3AF"}}>{safeCurrentPage}/{totalPages}p</span>
+                  </div>
+                  <span>판매합계: <b style={{color:"#111827"}}>₩{filtered.reduce((a,b)=>a+(b.price||0),0).toLocaleString()}</b> | 공급합계: <b style={{color:"#6B7280"}}>₩{filtered.reduce((a,b)=>a+(b.supplyPrice||0),0).toLocaleString()}</b></span>
                 </div>
               </div>
             </>
@@ -1713,7 +1874,7 @@ export default function App() {
 
       {/* ═══ MODALS ════════════════════════════════════════ */}
       <Modal open={!!detailModal} onClose={()=>setDetailModal(null)} title="주문 상세" width={560}>
-        {detailModal&&(()=>{const o=detailModal,site=SITES[o.site],os=ORDER_STATUS[o.orderStatus],ss=SUPPLY_STATUS[o.supplyStatus];return(<div style={{display:"flex",flexDirection:"column",gap:12}}><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><Badge color={site.color} bg={`${site.color}24`}>{site.icon} {site.name}</Badge><Badge color={os.color} bg={os.bg}><Dot color={os.color}/>{os.label}</Badge><Badge color={ss.color} bg={ss.bg}>{ss.label}</Badge>{o.paymentMethod&&<Badge color="#6366F1" bg="#EEF2FF">{o.paymentMethod}</Badge>}<Badge color="#DC2626" bg="#FEE2E2">⛔ 읽기 전용</Badge></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{[["WSA 주문번호",o.id],["No",o.no],["상품코드",o.productCode||"—"],["상품명",o.product],["옵션",o.option||o.optCode||"—"],["수량",`${o.qty}개`],["판매가",`₩${o.price.toLocaleString()}`],["배송비",o.shippingFee?`₩${o.shippingFee.toLocaleString()}`:"무료"],["합계",`₩${o.total.toLocaleString()}`],["결제방법",o.paymentMethod||"—"],["판매사",o.seller],["공급사(거래처)",o.supplier],["주문자",o.buyer],["연락처",o.phone||"—"],["주소",o.address||"—"],["채널",o.channel||"—"],["주문경로",o.orderRoute||"—"],["SSA번호",o.ssa||"—"],["소득공제",o.taxDeduction||"—"],["택배사",o.carrier?.name||"미등록"],["송장",o.invoice||"미등록"],["메일발송",o.mailSent?"발송완료":"미발송"],["발송내역",`${o.shipCount||0}건`],["주문일시",`${o.date} ${o.time}`]].map(([k,v],i)=>(<div key={i} style={{padding:"8px 10px",background:theme.light,borderRadius:10}}><div style={{fontSize:9.5,color:"#6B7280",fontWeight:600,marginBottom:2}}>{k}</div><div style={{fontSize:11.5,fontWeight:600,wordBreak:"break-all"}}>{v}</div></div>))}</div></div>);})()}
+        {detailModal&&(()=>{const o=detailModal,site=SITES[o.site],os=ORDER_STATUS[o.orderStatus],ss=SUPPLY_STATUS[o.supplyStatus];return(<div style={{display:"flex",flexDirection:"column",gap:12}}><div style={{display:"flex",gap:6,flexWrap:"wrap"}}><Badge color={site.color} bg={`${site.color}24`}>{site.icon} {site.name}</Badge><Badge color={os.color} bg={os.bg}><Dot color={os.color}/>{os.label}</Badge><Badge color={ss.color} bg={ss.bg}>{ss.label}</Badge>{o.paymentMethod&&<Badge color="#6366F1" bg="#EEF2FF">{o.paymentMethod}</Badge>}<Badge color="#DC2626" bg="#FEE2E2">⛔ 읽기 전용</Badge></div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>{[["WSA 주문번호",o.id],["No",o.no],["PO번호",o.po||"—"],["상품코드",o.productCode||"—"],["옵션코드",o.optCode||"—"],["상품명",o.product],["옵션",o.option||"—"],["수량",`${o.qty}개`],["판매가",`₩${(o.price||0).toLocaleString()}`],["공급가",`₩${(o.supplyPrice||0).toLocaleString()}`],["소비자가",o.consumerPrice?`₩${o.consumerPrice.toLocaleString()}`:"—"],["배송비",o.shippingFee?`₩${o.shippingFee.toLocaleString()}`:"무료"],["합계",`₩${(o.total||0).toLocaleString()}`],["결제방법",o.paymentMethod||"—"],["판매사",o.seller],["공급사(거래처)",o.supplier],["주문자",o.buyer],["연락처",o.phone||"—"],["우편번호",o.zip||"—"],["주소",o.address||"—"],["채널",o.channel||"—"],["주문경로",o.orderRoute||"—"],["SSA번호",o.ssa||"—"],["소득공제",o.taxDeduction||"—"],["택배사",o.carrier?.name||"미등록"],["송장",o.invoice||"미등록"],["메일발송",o.mailSent?"발송완료":"미발송"],["발송내역",`${o.shipCount||0}건`],["주문일",o.orderDate||`${o.date} ${o.time}`],["업로드일",o.uploadDate||"—"]].map(([k,v],i)=>(<div key={i} style={{padding:"8px 10px",background:theme.light,borderRadius:10}}><div style={{fontSize:9.5,color:"#6B7280",fontWeight:600,marginBottom:2}}>{k}</div><div style={{fontSize:11.5,fontWeight:600,wordBreak:"break-all"}}>{v}</div></div>))}</div></div>);})()}
       </Modal>
 
       <Modal open={poModal} onClose={()=>setPoModal(false)} title="발주서 전송 확인" width={540}>

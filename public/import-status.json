@@ -1,0 +1,10 @@
+{
+  "triggered": false,
+  "status": "done",
+  "time": "2026-03-16T05:14:32.226Z",
+  "result": {
+    "success": false,
+    "error": "Attempted to use detached Frame '5E682B325E67802494F6715FB5EFE5EB'.",
+    "channel": "쿠팡"
+  }
+}

@@ -297,7 +297,7 @@ export default function App() {
   const [modalPresetName,setModalPresetName]=useState("");
   const [search,setSearch]=useState("");
   const [advSearch,setAdvSearch]=useState(false);
-  const [advFilters,setAdvFilters]=useState({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:"2026-02-24",dateTo:"2026-02-24",buyer:"",product:"",invoiceYn:"all"});
+  const [advFilters,setAdvFilters]=useState({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:new Date().toISOString().slice(0,10),dateTo:new Date().toISOString().slice(0,10),buyer:"",product:"",invoiceYn:"all"});
   const [siteFilter,setSiteFilter]=useState("all");
   const [statusFilter,setStatusFilter]=useState("all");
   const [supplyFilter,setSupplyFilter]=useState("all");
@@ -1358,7 +1358,7 @@ export default function App() {
                     {/* 검색/초기화 */}
                     <div style={{display:"flex",justifyContent:"center",gap:8,paddingTop:10,borderTop:"1px solid #F3F4F6"}}>
                       <button onClick={()=>showToast("검색 조건 적용","info")} style={{padding:"8px 28px",borderRadius:7,border:"none",background:"#111827",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔍 검색</button>
-                      <button onClick={()=>{setAdvFilters({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:"2026-02-24",dateTo:"2026-02-24",buyer:"",product:"",invoiceYn:"all",dateType:"order_date"});setSellerFilter("all");setSiteFilter("all");setSearch("");showToast("초기화 완료");}} style={{padding:"8px 28px",borderRadius:7,border:"1px solid #D1D5DB",background:"#F9FAFB",color:"#374151",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔄 초기화</button>
+                      <button onClick={()=>{setAdvFilters({supplier:"all",status:"all",bjStatus:"all",fgStatus:"all",matchType:"all",dateFrom:new Date().toISOString().slice(0,10),dateTo:new Date().toISOString().slice(0,10),buyer:"",product:"",invoiceYn:"all",dateType:"order_date"});setSellerFilter("all");setSiteFilter("all");setSearch("");showToast("초기화 완료");}} style={{padding:"8px 28px",borderRadius:7,border:"1px solid #D1D5DB",background:"#F9FAFB",color:"#374151",fontSize:12,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>🔄 초기화</button>
                     </div>
                   </div>
                 )}
