@@ -382,7 +382,7 @@ function fgBridgePlugin() {
           const loginPath = path.resolve('bj-login.json');
           try {
             const data = JSON.parse(fs.readFileSync(loginPath, 'utf8'));
-            res.end(JSON.stringify({ ok: true, loginId: data.loginId || '', repId: data.repId || '', hasPassword: !!(data.loginPw) }));
+            res.end(JSON.stringify({ ok: true, loginId: data.loginId || '', repId: data.repId || '', loginType: data.loginType || 'sub', hasPassword: !!(data.loginPw) }));
           } catch {
             res.end(JSON.stringify({ ok: true, loginId: '', hasPassword: false }));
           }
@@ -402,6 +402,7 @@ function fgBridgePlugin() {
               if (data.loginId !== undefined) existing.loginId = data.loginId;
               if (data.loginPw !== undefined) existing.loginPw = data.loginPw;
               if (data.repId !== undefined) existing.repId = data.repId;
+              if (data.loginType !== undefined) existing.loginType = data.loginType;
               fs.writeFileSync(loginPath, JSON.stringify(existing, null, 2), 'utf8');
               cors(res);
               res.setHeader('Content-Type', 'application/json');

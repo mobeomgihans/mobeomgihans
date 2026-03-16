@@ -21,11 +21,13 @@ const USER_DATA_DIR = path.join(process.env.USERPROFILE || process.env.HOME, '.b
 let LOGIN_ID = '';
 let LOGIN_PW = '';
 let REP_ID = '';
+let LOGIN_TYPE = 'sub'; // "main"=주계정, "sub"=부계정
 try {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   LOGIN_ID = cfg.loginId || '';
   LOGIN_PW = cfg.loginPw || '';
   REP_ID = cfg.repId || '';
+  LOGIN_TYPE = cfg.loginType || 'sub';
 } catch {}
 
 // ─── 채널 인자 파싱 (다중 채널 지원: "coupang,smartstore") ──
@@ -140,17 +142,48 @@ const cleanLocks = () => {
         addLog('자동 로그인 시도...');
         writeStatus({ triggered: true, status: 'login_auto', time: new Date().toISOString() });
 
-        // 대표계정 아이디, 아이디, 비밀번호 입력
-        await page.evaluate((repId, id, pw) => {
-          // 대표계정 아이디 필드 (있으면)
-          const repField = document.querySelector('input[name="repId"], input[name="masterUserId"], input[name="parentId"], input[placeholder*="대표"], input[placeholder*="마스터"]');
-          if (repField && repId) { repField.value = repId; repField.dispatchEvent(new Event('input', { bubbles: true })); }
-          // 아이디 필드
-          const idField = document.querySelector('input[name="userId"], input[name="id"], input[name="loginId"], input[type="text"][id*="id" i], input[type="text"][id*="user" i], input[type="text"][placeholder*="아이디"], input[type="text"]');
-          const pwField = document.querySelector('input[name="userPw"], input[name="pw"], input[name="password"], input[type="password"]');
-          if (idField) { idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true })); }
+        // 부계정 로그인 모드: "부계정 로그인" 버튼 클릭하여 대표계정 필드 노출
+        if (LOGIN_TYPE === 'sub') {
+          addLog('부계정 로그인 모드 전환...');
+          const clicked = await page.evaluate(() => {
+            const links = document.querySelectorAll('a, button, span, label, div');
+            for (const el of links) {
+              const t = (el.textContent || '').trim();
+              if (t.includes('부계정') && t.includes('로그인')) {
+                el.click();
+                return true;
+              }
+            }
+            return false;
+          });
+          if (clicked) {
+            addLog('부계정 로그인 폼 전환 성공');
+            await sleep(1000);
+          } else {
+            addLog('부계정 로그인 버튼 못찾음 — 현재 폼으로 진행');
+          }
+        } else {
+          addLog('주계정 로그인 모드');
+        }
+
+        // 아이디, 비밀번호 입력
+        await page.evaluate((loginType, repId, id, pw) => {
+          const allInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+          const pwField = document.querySelector('input[type="password"]');
+
+          if (loginType === 'sub' && allInputs.length >= 2) {
+            // 부계정: 첫번째=대표계정 아이디, 두번째=아이디
+            const repField = allInputs[0];
+            const idField = allInputs[1];
+            repField.value = repId; repField.dispatchEvent(new Event('input', { bubbles: true }));
+            idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            // 주계정: 첫번째=아이디
+            const idField = allInputs[0];
+            if (idField) { idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true })); }
+          }
           if (pwField) { pwField.value = pw; pwField.dispatchEvent(new Event('input', { bubbles: true })); }
-        }, REP_ID, LOGIN_ID, LOGIN_PW);
+        }, LOGIN_TYPE, REP_ID, LOGIN_ID, LOGIN_PW);
         if (REP_ID) addLog(`대표계정: ${REP_ID}`);
         await sleep(500);
 

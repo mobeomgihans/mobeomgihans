@@ -815,11 +815,12 @@ export default function App() {
   const [bjLoginId,setBjLoginId]=useState("");
   const [bjLoginPw,setBjLoginPw]=useState("");
   const [bjRepId,setBjRepId]=useState("");
+  const [bjLoginType,setBjLoginType]=useState("sub"); // "main"=주계정, "sub"=부계정
   const [bjLoginSaved,setBjLoginSaved]=useState(false);
   const [showLoginSettings,setShowLoginSettings]=useState(false);
-  useEffect(()=>{fetch('/api/bj-login').then(r=>r.json()).then(d=>{if(d.ok){setBjLoginId(d.loginId||"");setBjRepId(d.repId||"");setBjLoginSaved(d.hasPassword);}}).catch(()=>{});},[]);
+  useEffect(()=>{fetch('/api/bj-login').then(r=>r.json()).then(d=>{if(d.ok){setBjLoginId(d.loginId||"");setBjRepId(d.repId||"");setBjLoginType(d.loginType||"sub");setBjLoginSaved(d.hasPassword);}}).catch(()=>{});},[]);
   const saveBjLogin=async()=>{
-    try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw,repId:bjRepId})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
+    try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw,repId:bjRepId,loginType:bjLoginType})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
   };
   useEffect(()=>{if(!showChannelMenu)return;const h=(e)=>{if(!e.target.closest('[data-channel-menu]'))setShowChannelMenu(false)};setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
   const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
@@ -1219,11 +1220,17 @@ export default function App() {
                     <span>발주모아 로그인 설정</span>
                     {bjLoginSaved&&<span style={{color:"#22C55E",fontSize:11}}>({bjLoginId||"설정됨"})</span>}
                   </div>
-                  {showLoginSettings&&<div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                    <input value={bjRepId} onChange={e=>setBjRepId(e.target.value)} placeholder="대표계정 아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:130,outline:"none"}}/>
-                    <input value={bjLoginId} onChange={e=>setBjLoginId(e.target.value)} placeholder="아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:120,outline:"none"}}/>
-                    <input type="password" value={bjLoginPw} onChange={e=>setBjLoginPw(e.target.value)} placeholder={bjLoginSaved?"(저장됨) 변경시 입력":"비밀번호"} style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:160,outline:"none"}}/>
-                    <div onClick={saveBjLogin} style={{padding:"6px 14px",background:"#374151",borderRadius:6,fontSize:12,color:"#D1D5DB",cursor:"pointer",fontWeight:600}} onMouseOver={e=>e.currentTarget.style.background="#4B5563"} onMouseOut={e=>e.currentTarget.style.background="#374151"}>저장</div>
+                  {showLoginSettings&&<div style={{marginTop:8,display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <div onClick={()=>setBjLoginType("main")} style={{padding:"4px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",background:bjLoginType==="main"?"#2563EB":"#1F2937",color:bjLoginType==="main"?"#fff":"#9CA3AF",border:bjLoginType==="main"?"1px solid #3B82F6":"1px solid #374151"}}>주계정</div>
+                      <div onClick={()=>setBjLoginType("sub")} style={{padding:"4px 12px",borderRadius:6,fontSize:11,fontWeight:600,cursor:"pointer",background:bjLoginType==="sub"?"#2563EB":"#1F2937",color:bjLoginType==="sub"?"#fff":"#9CA3AF",border:bjLoginType==="sub"?"1px solid #3B82F6":"1px solid #374151"}}>부계정</div>
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      {bjLoginType==="sub"&&<input value={bjRepId} onChange={e=>setBjRepId(e.target.value)} placeholder="대표계정 아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:130,outline:"none"}}/>}
+                      <input value={bjLoginId} onChange={e=>setBjLoginId(e.target.value)} placeholder="아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:120,outline:"none"}}/>
+                      <input type="password" value={bjLoginPw} onChange={e=>setBjLoginPw(e.target.value)} placeholder={bjLoginSaved?"(저장됨) 변경시 입력":"비밀번호"} style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:160,outline:"none"}}/>
+                      <div onClick={saveBjLogin} style={{padding:"6px 14px",background:"#374151",borderRadius:6,fontSize:12,color:"#D1D5DB",cursor:"pointer",fontWeight:600}} onMouseOver={e=>e.currentTarget.style.background="#4B5563"} onMouseOut={e=>e.currentTarget.style.background="#374151"}>저장</div>
+                    </div>
                   </div>}
                 </div>
               </div>}
