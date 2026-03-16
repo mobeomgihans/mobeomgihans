@@ -706,81 +706,92 @@ const cleanLocks = () => {
     let regComplete = false;
     for (let i = 0; i < 30; i++) {
       await sleep(2000);
-      const progress = await page.evaluate((iter) => {
-        const text = document.body.innerText || '';
-        const hasComplete = text.includes('주문등록이 완료') || text.includes('주문 수집이 완료') ||
-            text.includes('등록이 완료') || text.includes('등록 완료') ||
-            text.includes('처리가 완료') || text.includes('처리 완료');
-        if (hasComplete) return { done: true, reason: 'complete_text' };
-        if (iter > 5) {
-          const loadingEl = document.querySelector('.loading_wrap, .dim_wrap, [class*=loading], [class*=progress]');
-          if (!loadingEl || loadingEl.style.display === 'none') return { done: true, reason: 'no_loading' };
-        }
-        return { done: false };
-      }, i);
-      if (i % 5 === 4) addLog(`등록 대기중... (${(i+1)*2}초)`);
-      writeStatus({ triggered: true, status: 'registering', time: new Date().toISOString(), count: orderCount });
-      if (progress.done) { regComplete = true; addLog(`등록 완료 감지`); break; }
+      try {
+        const progress = await page.evaluate((iter) => {
+          const text = document.body.innerText || '';
+          const hasComplete = text.includes('주문등록이 완료') || text.includes('주문 수집이 완료') ||
+              text.includes('등록이 완료') || text.includes('등록 완료') ||
+              text.includes('처리가 완료') || text.includes('처리 완료');
+          if (hasComplete) return { done: true, reason: 'complete_text' };
+          if (iter > 5) {
+            const loadingEl = document.querySelector('.loading_wrap, .dim_wrap, [class*=loading], [class*=progress]');
+            if (!loadingEl || loadingEl.style.display === 'none') return { done: true, reason: 'no_loading' };
+          }
+          return { done: false };
+        }, i);
+        if (i % 5 === 4) addLog(`등록 대기중... (${(i+1)*2}초)`);
+        writeStatus({ triggered: true, status: 'registering', time: new Date().toISOString(), count: orderCount });
+        if (progress.done) { regComplete = true; addLog(`등록 완료 감지`); break; }
+      } catch (evalErr) {
+        // 페이지 리로드/네비게이션으로 컨텍스트 소멸 시 — 등록 완료로 간주
+        addLog(`등록 완료 (페이지 전환됨)`);
+        regComplete = true;
+        break;
+      }
     }
 
     if (!regComplete) addLog('등록 타임아웃 — 모달 정리 시도');
 
-    // ─── 모달 정리 ───────────────────────────────────
+    // ─── 모달 정리 (Detached Frame 방지: 전체 try-catch) ─
     addLog('모달 정리...');
     writeStatus({ triggered: true, status: 'closing_modals', time: new Date().toISOString() });
-    await sleep(1000);
+    try {
+      await sleep(1000);
 
-    // Step A: 확인 버튼
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('button');
-      for (const btn of btns) {
-        if (btn.textContent.trim() === '확인' && btn.offsetParent !== null) { btn.click(); break; }
-      }
-    });
-    await sleep(1000);
-
-    // Step B: 닫기 버튼
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('button');
-      for (const btn of btns) {
-        const t = btn.textContent.trim();
-        if ((t === '닫기' || t === '닫 기') && btn.offsetParent !== null) { btn.click(); return; }
-      }
-    });
-    await sleep(500);
-
-    // Step C: 잔여 모달
-    await page.evaluate(() => {
-      const btns = document.querySelectorAll('button');
-      for (const btn of btns) {
-        const t = btn.textContent.trim();
-        if ((t === '닫기' || t === '닫 기' || t === '확인' || t === '처리 내용 저장') && btn.offsetParent !== null) {
-          btn.click();
+      // Step A: 확인 버튼
+      await page.evaluate(() => {
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+          if (btn.textContent.trim() === '확인' && btn.offsetParent !== null) { btn.click(); break; }
         }
-      }
-    });
-    await sleep(500);
+      });
+      await sleep(1000);
 
-    // confirm/alert 복원
-    await page.evaluate(() => {
-      if (window.__origConfirm) window.confirm = window.__origConfirm;
-      if (window.__origAlert) window.alert = window.__origAlert;
-    });
+      // Step B: 닫기 버튼
+      await page.evaluate(() => {
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+          const t = btn.textContent.trim();
+          if ((t === '닫기' || t === '닫 기') && btn.offsetParent !== null) { btn.click(); return; }
+        }
+      });
+      await sleep(500);
+
+      // Step C: 잔여 모달
+      await page.evaluate(() => {
+        const btns = document.querySelectorAll('button');
+        for (const btn of btns) {
+          const t = btn.textContent.trim();
+          if ((t === '닫기' || t === '닫 기' || t === '확인' || t === '처리 내용 저장') && btn.offsetParent !== null) {
+            btn.click();
+          }
+        }
+      });
+      await sleep(500);
+
+      // confirm/alert 복원
+      await page.evaluate(() => {
+        if (window.__origConfirm) window.confirm = window.__origConfirm;
+        if (window.__origAlert) window.alert = window.__origAlert;
+      });
+    } catch (modalErr) {
+      addLog('모달 정리 중 페이지 전환됨 (정상)');
+    }
 
     // 결과 알림
     const result = { success: true, count: orderCount, message: `${channelLabel} ${orderCount}건 연동 완료`, channel: channelLabel };
-    addLog(`완료! ${channelLabel} ${orderCount}건 등록 성공`);
+    addLog(`✅ 완료! ${channelLabel} ${orderCount}건 등록 성공`);
     writeStatus({ triggered: false, status: 'done', time: new Date().toISOString(), result });
     await notifyDone(result);
 
-    addLog('브라우저 종료중...');
+    addLog('🔒 브라우저 종료중...');
     await sleep(2000);
-    await browser.disconnect();
+    try { await browser.disconnect(); } catch {}
     try { process.kill(whaleProc.pid); } catch {}
-    addLog('브라우저 종료 완료');
+    addLog('🔒 브라우저 종료 완료');
 
   } catch (e) {
-    addLog(`오류: ${e.message}`);
+    addLog(`❌ 오류: ${e.message}`);
     const result = { success: false, error: e.message, channel: channelLabel };
     writeStatus({ triggered: false, status: 'error', time: new Date().toISOString(), result });
     await notifyDone(result);

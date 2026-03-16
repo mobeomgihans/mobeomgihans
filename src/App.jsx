@@ -884,14 +884,14 @@ export default function App() {
               if(sd.status==='done'){showToast(`연동 완료! ${sd.result?.count||0}건 등록`);refresh();}
               else if(sd.status==='stopped')showToast("연동 가져오기 중지됨","error");
               else if(sd.status==='error')showToast(`연동 오류: ${sd.result?.error||"알 수 없는 오류"}`,"error");
-              else showToast("연동 프로세스 종료됨","error");
+              else showToast("연동 가져오기 종료됨");
             }
             // 상태 변화 없이 15회(30초) 지속되면 프로세스 죽은 것으로 판단
             if(sd.status===lastStatus){sameCount++;}else{sameCount=0;lastStatus=sd.status;}
             if(sameCount>=15&&sd.status!=='login_required'){
               done=true;
-              setImportStatus(prev=>({running:false,result:{success:false,message:'응답 없음 — 프로세스 종료됨'},statusText:"",logs:prev.logs,channel}));
-              showToast("연동 프로세스 응답 없음 — 자동 중지됨","error");
+              setImportStatus(prev=>({running:false,result:{success:false,message:'연동 시간 초과 — 종료됨'},statusText:"",logs:prev.logs,channel}));
+              showToast("연동 시간 초과 — 자동 종료됨","error");
               try{fetch('/api/stop-import',{method:'POST'});}catch{}
             }
           }catch(err){console.error('polling error:',err);}
