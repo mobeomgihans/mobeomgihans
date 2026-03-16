@@ -224,24 +224,65 @@ const cleanLocks = () => {
     await page.evaluate(() => { beforeOnList(); });
     await sleep(3000);
 
-    // 쿠팡 안내 모달 확인
-    const hasCoupang = await page.evaluate(() => !!document.querySelector('#CoupangView'));
-    if (hasCoupang) {
-      addLog('쿠팡 안내 확인...');
-      await page.evaluate(() => { onList(); });
+    // 쿠팡 안내 모달 확인 — 모달이 뜨면 확인 버튼 클릭
+    await sleep(2000);
+    const coupangHandled = await page.evaluate(() => {
+      // #CoupangView 모달 또는 쿠팡 안내 텍스트가 있는 모달 찾기
+      const cv = document.querySelector('#CoupangView');
+      if (cv) {
+        // onList() 함수가 있으면 호출
+        if (typeof onList === 'function') { onList(); return 'onList'; }
+        // 확인 버튼 클릭
+        const btn = cv.querySelector('button') || cv.querySelector('[onclick]');
+        if (btn) { btn.click(); return 'btn'; }
+      }
+      // 쿠팡 관련 모달의 확인 버튼 찾기
+      const modals = document.querySelectorAll('.modal, .popup, [class*=modal], [class*=popup], [role=dialog]');
+      for (const m of modals) {
+        const text = m.textContent || '';
+        if (text.includes('쿠팡') && (text.includes('확인') || text.includes('상품준비'))) {
+          const btns = m.querySelectorAll('button');
+          for (const btn of btns) {
+            if (btn.textContent.trim() === '확인' && btn.offsetParent !== null) { btn.click(); return 'modal-btn'; }
+          }
+        }
+      }
+      return null;
+    });
+    if (coupangHandled) {
+      addLog('쿠팡 안내 확인 완료');
       await sleep(3000);
     }
 
+    // 추가: 화면에 남아있는 모든 확인 버튼 클릭 (안내 팝업 정리)
+    await page.evaluate(() => {
+      const modals = document.querySelectorAll('.modal, .popup, [class*=modal], [role=dialog]');
+      for (const m of modals) {
+        if (m.offsetParent === null) continue;
+        const btns = m.querySelectorAll('button');
+        for (const btn of btns) {
+          const t = btn.textContent.trim();
+          if (t === '확인' && btn.offsetParent !== null) { btn.click(); break; }
+        }
+      }
+    });
+    await sleep(1000);
+
     // 주문 로딩 대기
     addLog('주문 로딩 대기...');
-    await page.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 0, { timeout: 60000 });
+    try {
+      await page.waitForFunction(() => document.querySelectorAll('table tbody tr').length > 0, { timeout: 60000 });
+    } catch {
+      addLog('주문 로딩 타임아웃 — 주문이 없을 수 있음');
+    }
     await sleep(2000);
 
-    // 결과 모달 닫기
+    // 결과 모달 닫기 (연동계정에서 가져온 결과)
     await page.evaluate(() => {
-      const modals = document.querySelectorAll('.modal');
+      const modals = document.querySelectorAll('.modal, [class*=modal], [role=dialog]');
       for (const m of modals) {
-        if (m.textContent.includes('연동계정에서 가져온')) {
+        const text = m.textContent || '';
+        if (text.includes('연동계정에서 가져온') || text.includes('가져오기 결과') || text.includes('수집 결과')) {
           const btns = m.querySelectorAll('button');
           for (const btn of btns) { if (btn.textContent.trim() === '확인') { btn.click(); return; } }
         }
