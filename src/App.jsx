@@ -808,20 +808,36 @@ export default function App() {
 
   // ─── 발주모아 연동 가져오기 ──────────────────────────
   const [importStatus,setImportStatus]=useState({running:false,result:null,statusText:"",logs:[],channel:"all"});
-  const [importChannel,setImportChannel]=useState("all");
+  const [importChannel,setImportChannel]=useState(["all"]);
   const [showImportPanel,setShowImportPanel]=useState(false);
   const [showChannelMenu,setShowChannelMenu]=useState(false);
   const importStopRef=useRef(false);
   const [bjLoginId,setBjLoginId]=useState("");
   const [bjLoginPw,setBjLoginPw]=useState("");
+  const [bjRepId,setBjRepId]=useState("");
   const [bjLoginSaved,setBjLoginSaved]=useState(false);
   const [showLoginSettings,setShowLoginSettings]=useState(false);
-  useEffect(()=>{fetch('/api/bj-login').then(r=>r.json()).then(d=>{if(d.ok){setBjLoginId(d.loginId||"");setBjLoginSaved(d.hasPassword);}}).catch(()=>{});},[]);
+  useEffect(()=>{fetch('/api/bj-login').then(r=>r.json()).then(d=>{if(d.ok){setBjLoginId(d.loginId||"");setBjRepId(d.repId||"");setBjLoginSaved(d.hasPassword);}}).catch(()=>{});},[]);
   const saveBjLogin=async()=>{
-    try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
+    try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw,repId:bjRepId})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
   };
-  useEffect(()=>{if(!showChannelMenu)return;const h=()=>setShowChannelMenu(false);setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
+  useEffect(()=>{if(!showChannelMenu)return;const h=(e)=>{if(!e.target.closest('[data-channel-menu]'))setShowChannelMenu(false)};setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
   const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
+  const toggleChannel=(val)=>{
+    if(val==="all"){setImportChannel(["all"]);return;}
+    setImportChannel(prev=>{
+      let next=prev.filter(v=>v!=="all");
+      if(next.includes(val))next=next.filter(v=>v!==val);else next=[...next,val];
+      if(next.length===0||next.length===3)return["all"];
+      return next;
+    });
+  };
+  const getChannelDisplay=()=>{
+    if(importChannel.includes("all"))return{label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"};
+    const selected=importChannel.map(v=>importChannels.find(c=>c.value===v)).filter(Boolean);
+    if(selected.length===1)return selected[0];
+    return{label:selected.map(c=>c.label).join(", "),emoji:selected.map(c=>c.emoji).join(""),color:"#374151",bg:"#F9FAFB",border:"#E5E7EB",hoverBg:"#F3F4F6"};
+  };
   const stopImport=(e)=>{
     if(e)e.stopPropagation();
     importStopRef.current=true;
@@ -830,15 +846,16 @@ export default function App() {
     try{fetch('/api/stop-import',{method:'POST'});}catch{}
   };
   const triggerImport=async(ch)=>{
-    const channel=ch||importChannel;
+    const channels=ch||importChannel;
+    const channelStr=Array.isArray(channels)?channels.join(","):channels;
     if(importStatus.running)return;
     importStopRef.current=false;
-    const channelLabel=importChannels.find(c=>c.value===channel)?.label||channel;
-    setImportStatus({running:true,result:null,statusText:"웨일 브라우저 실행중...",logs:[{time:new Date().toISOString(),msg:`${channelLabel} 연동 시작`}],channel});
+    const channelLabel=channelStr==="all"||channelStr.includes("all")?"전체":channelStr.split(",").map(v=>importChannels.find(c=>c.value===v)?.label||v).join(", ");
+    setImportStatus({running:true,result:null,statusText:"웨일 브라우저 실행중...",logs:[{time:new Date().toISOString(),msg:`${channelLabel} 연동 시작`}],channel:channelStr});
     setShowImportPanel(true);
     showToast(`발주모아 연동 가져오기 (${channelLabel})`);
     try{
-      const r=await fetch('/api/trigger-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel})});
+      const r=await fetch('/api/trigger-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:channelStr})});
       const d=await r.json();
       if(d.ok){
         const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_auto:"자동 로그인중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
@@ -1153,7 +1170,7 @@ export default function App() {
                   </div>
                   <Btn onClick={mcpManualSync} variant="primary" style={{padding:"10px 20px",fontSize:14,borderRadius:12}}>🔄 수동 동기화</Btn>
                   <div style={{position:"relative",display:"flex",alignItems:"center",gap:6}}>
-                    {(()=>{const ch=importChannels.find(c=>c.value===importChannel)||importChannels[0];return<div style={{display:"flex",alignItems:"center",gap:0,borderRadius:12,background:importStatus.running?"#FFFBEB":ch.bg,border:importStatus.running?"1.5px solid #FDE68A":`1.5px solid ${ch.border}`,overflow:"hidden",transition:"all 0.2s"}}>
+                    {(()=>{const ch=getChannelDisplay();return<div style={{display:"flex",alignItems:"center",gap:0,borderRadius:12,background:importStatus.running?"#FFFBEB":ch.bg,border:importStatus.running?"1.5px solid #FDE68A":`1.5px solid ${ch.border}`,overflow:"hidden",transition:"all 0.2s"}}>
                       <div onClick={()=>importStatus.running?setShowImportPanel(true):triggerImport()} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",cursor:importStatus.running?"default":"pointer",fontSize:14,fontWeight:600,color:importStatus.running?"#92400E":ch.color}} onMouseOver={e=>{if(!importStatus.running)e.currentTarget.style.background=ch.hoverBg}} onMouseOut={e=>{e.currentTarget.style.background="transparent"}}>
                         {importStatus.running?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>⏳</span> {importStatus.statusText||"처리중..."}</>:<>📥 연동 가져오기</>}
                       </div>
@@ -1164,8 +1181,8 @@ export default function App() {
                         ■ 중지
                       </div>}
                     </div>})()}
-                    {showChannelMenu&&!importStatus.running&&<div style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",overflow:"hidden",zIndex:100,minWidth:170,padding:"4px 0"}}>
-                      {importChannels.map(c=>{const sel=importChannel===c.value;return<div key={c.value} onClick={()=>{setImportChannel(c.value);setShowChannelMenu(false)}} style={{padding:"11px 16px",fontSize:13,fontWeight:sel?700:500,color:sel?c.color:"#374151",background:sel?c.bg:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.1s",borderLeft:sel?`3px solid ${c.color}`:"3px solid transparent"}} onMouseOver={e=>{e.currentTarget.style.background=sel?c.bg:"#F9FAFB";e.currentTarget.style.color=c.color}} onMouseOut={e=>{e.currentTarget.style.background=sel?c.bg:"#fff";e.currentTarget.style.color=sel?c.color:"#374151"}}>
+                    {showChannelMenu&&!importStatus.running&&<div data-channel-menu style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",overflow:"hidden",zIndex:100,minWidth:180,padding:"4px 0"}}>
+                      {importChannels.map(c=>{const sel=c.value==="all"?importChannel.includes("all"):importChannel.includes(c.value);return<div key={c.value} onClick={e=>{e.stopPropagation();toggleChannel(c.value)}} style={{padding:"11px 16px",fontSize:13,fontWeight:sel?700:500,color:sel?c.color:"#374151",background:sel?c.bg:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.1s",borderLeft:sel?`3px solid ${c.color}`:"3px solid transparent"}} onMouseOver={e=>{e.currentTarget.style.background=sel?c.bg:"#F9FAFB";e.currentTarget.style.color=c.color}} onMouseOut={e=>{e.currentTarget.style.background=sel?c.bg:"#fff";e.currentTarget.style.color=sel?c.color:"#374151"}}>
                         <span style={{fontSize:15}}>{c.emoji}</span><span>{c.label}</span>{sel&&<span style={{marginLeft:"auto",color:c.color,fontSize:14}}>✓</span>}
                       </div>})}
                     </div>}
@@ -1203,8 +1220,9 @@ export default function App() {
                     {bjLoginSaved&&<span style={{color:"#22C55E",fontSize:11}}>({bjLoginId||"설정됨"})</span>}
                   </div>
                   {showLoginSettings&&<div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                    <input value={bjLoginId} onChange={e=>setBjLoginId(e.target.value)} placeholder="아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:140,outline:"none"}}/>
-                    <input type="password" value={bjLoginPw} onChange={e=>setBjLoginPw(e.target.value)} placeholder={bjLoginSaved?"(저장됨) 변경시 입력":"비밀번호"} style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:180,outline:"none"}}/>
+                    <input value={bjRepId} onChange={e=>setBjRepId(e.target.value)} placeholder="대표계정 아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:130,outline:"none"}}/>
+                    <input value={bjLoginId} onChange={e=>setBjLoginId(e.target.value)} placeholder="아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:120,outline:"none"}}/>
+                    <input type="password" value={bjLoginPw} onChange={e=>setBjLoginPw(e.target.value)} placeholder={bjLoginSaved?"(저장됨) 변경시 입력":"비밀번호"} style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:160,outline:"none"}}/>
                     <div onClick={saveBjLogin} style={{padding:"6px 14px",background:"#374151",borderRadius:6,fontSize:12,color:"#D1D5DB",cursor:"pointer",fontWeight:600}} onMouseOver={e=>e.currentTarget.style.background="#4B5563"} onMouseOut={e=>e.currentTarget.style.background="#374151"}>저장</div>
                   </div>}
                 </div>

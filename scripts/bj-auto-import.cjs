@@ -20,18 +20,22 @@ const USER_DATA_DIR = path.join(process.env.USERPROFILE || process.env.HOME, '.b
 // ─── 로그인 설정 로드 ───────────────────────────────
 let LOGIN_ID = '';
 let LOGIN_PW = '';
+let REP_ID = '';
 try {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   LOGIN_ID = cfg.loginId || '';
   LOGIN_PW = cfg.loginPw || '';
+  REP_ID = cfg.repId || '';
 } catch {}
 
-// ─── 채널 인자 파싱 ──────────────────────────────────
+// ─── 채널 인자 파싱 (다중 채널 지원: "coupang,smartstore") ──
 const args = process.argv.slice(2);
 const channelIdx = args.indexOf('--channel');
-const CHANNEL = channelIdx >= 0 && args[channelIdx + 1] ? args[channelIdx + 1] : 'all';
+const CHANNEL_RAW = channelIdx >= 0 && args[channelIdx + 1] ? args[channelIdx + 1] : 'all';
+const CHANNELS = CHANNEL_RAW.split(',').map(c => c.trim());
+const IS_ALL = CHANNELS.includes('all');
 const CHANNEL_LABELS = { all: '전체', coupang: '쿠팡', smartstore: '스마트스토어', etc: '기타' };
-const channelLabel = CHANNEL_LABELS[CHANNEL] || CHANNEL;
+const channelLabel = IS_ALL ? '전체' : CHANNELS.map(c => CHANNEL_LABELS[c] || c).join(', ');
 
 // ─── 로그 관리 ───────────────────────────────────────
 const logs = [];
@@ -136,14 +140,18 @@ const cleanLocks = () => {
         addLog('자동 로그인 시도...');
         writeStatus({ triggered: true, status: 'login_auto', time: new Date().toISOString() });
 
-        // 아이디/비밀번호 입력 필드 찾아서 입력
-        await page.evaluate((id, pw) => {
-          // 다양한 셀렉터로 입력 필드 찾기
+        // 대표계정 아이디, 아이디, 비밀번호 입력
+        await page.evaluate((repId, id, pw) => {
+          // 대표계정 아이디 필드 (있으면)
+          const repField = document.querySelector('input[name="repId"], input[name="masterUserId"], input[name="parentId"], input[placeholder*="대표"], input[placeholder*="마스터"]');
+          if (repField && repId) { repField.value = repId; repField.dispatchEvent(new Event('input', { bubbles: true })); }
+          // 아이디 필드
           const idField = document.querySelector('input[name="userId"], input[name="id"], input[name="loginId"], input[type="text"][id*="id" i], input[type="text"][id*="user" i], input[type="text"][placeholder*="아이디"], input[type="text"]');
           const pwField = document.querySelector('input[name="userPw"], input[name="pw"], input[name="password"], input[type="password"]');
           if (idField) { idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true })); }
           if (pwField) { pwField.value = pw; pwField.dispatchEvent(new Event('input', { bubbles: true })); }
-        }, LOGIN_ID, LOGIN_PW);
+        }, REP_ID, LOGIN_ID, LOGIN_PW);
+        if (REP_ID) addLog(`대표계정: ${REP_ID}`);
         await sleep(500);
 
         // 로그인 버튼 클릭
@@ -300,14 +308,11 @@ const cleanLocks = () => {
       etc: []
     };
 
-    if (CHANNEL === 'all') {
+    if (IS_ALL) {
       addLog('전체 계정 선택...');
-      // 전체 선택 버튼 클릭
       await page.evaluate(() => {
-        // link_selectAll 클래스
         const sa = document.querySelector('.link_selectAll');
         if (sa && !sa.classList.contains('active')) { sa.click(); return; }
-        // "전체 선택" 텍스트 요소
         const els = document.querySelectorAll('a, span, button, label');
         for (const el of els) {
           const t = (el.textContent || '').trim();
@@ -319,98 +324,78 @@ const cleanLocks = () => {
     } else {
       addLog(`${channelLabel} 계정만 선택 시작...`);
 
-      // 1단계: 전체 해제 — "전체 선택"을 활성→비활성으로 토글
+      // 1단계: 전체 해제
       addLog('모든 계정 해제중...');
-      // 전체 선택 활성화
       await page.evaluate(() => {
         const sa = document.querySelector('.link_selectAll');
         if (sa && !sa.classList.contains('active')) sa.click();
         else {
           const els = document.querySelectorAll('a, span, button, label');
-          for (const el of els) {
-            if ((el.textContent || '').trim() === '전체 선택') { el.click(); break; }
-          }
+          for (const el of els) { if ((el.textContent || '').trim() === '전체 선택') { el.click(); break; } }
         }
       });
       await sleep(400);
-      // 전체 선택 해제
       await page.evaluate(() => {
         const sa = document.querySelector('.link_selectAll');
         if (sa && sa.classList.contains('active')) sa.click();
         else {
           const els = document.querySelectorAll('a, span, button, label');
-          for (const el of els) {
-            if ((el.textContent || '').trim() === '전체 선택') { el.click(); break; }
-          }
+          for (const el of els) { if ((el.textContent || '').trim() === '전체 선택') { el.click(); break; } }
         }
       });
       await sleep(500);
 
-      // 2단계: 해당 채널 계정만 클릭
-      const keywords = channelKeywords[CHANNEL] || [];
+      // 2단계: 해당 채널 계정들만 클릭 (다중 채널 지원)
+      // 각 채널의 키워드를 합산
+      const allKeywords = [];
+      const hasEtc = CHANNELS.includes('etc');
+      for (const ch of CHANNELS) {
+        if (channelKeywords[ch]) allKeywords.push(...channelKeywords[ch]);
+      }
 
-      const selResult = await page.evaluate((ch, kw) => {
+      const selResult = await page.evaluate((channels, allKw, hasEtc) => {
         const selected = [];
         const skipped = [];
+        const coupangKw = ['쿠팡', 'Coupang', 'coupang', 'COUPANG'];
+        const smartKw = ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어'];
+
+        const shouldSelect = (text) => {
+          // 키워드 매칭
+          if (allKw.some(k => text.includes(k))) return true;
+          // "기타" 채널: 쿠팡/스마트스토어가 아닌 것
+          if (hasEtc) {
+            const isCoupang = coupangKw.some(k => text.includes(k));
+            const isSmart = smartKw.some(k => text.includes(k));
+            if (!isCoupang && !isSmart) return true;
+          }
+          return false;
+        };
 
         // 체크박스 방식
         const checkboxes = document.querySelectorAll('input[type=checkbox]');
         for (const cb of checkboxes) {
           if (cb.id === 'chkCheckDataAll') continue;
           const parent = cb.closest('li, tr, div, label, span') || cb.parentElement;
-          if (!parent) continue;
-          if (parent.closest('table tbody')) continue; // 주문 테이블 제외
+          if (!parent || parent.closest('table tbody')) continue;
           const text = (parent.textContent || '').trim();
-
-          let shouldSelect = false;
-          if (ch === 'etc') {
-            const isCoupang = ['쿠팡', 'Coupang', 'coupang', 'COUPANG'].some(k => text.includes(k));
-            const isSmart = ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어'].some(k => text.includes(k));
-            shouldSelect = !isCoupang && !isSmart;
-          } else {
-            shouldSelect = kw.some(k => text.includes(k));
-          }
-
-          if (shouldSelect && !cb.checked) {
-            cb.click();
-            selected.push(text.substring(0, 50));
-          } else if (!shouldSelect) {
-            skipped.push(text.substring(0, 50));
-          }
+          if (shouldSelect(text) && !cb.checked) { cb.click(); selected.push(text.substring(0, 50)); }
+          else if (!shouldSelect(text)) { skipped.push(text.substring(0, 50)); }
         }
-
         if (selected.length > 0) return { count: selected.length, selected, skipped, method: 'checkbox' };
 
-        // 탭/버튼 방식 — 연동계정 영역의 클릭 가능 요소
+        // 탭/버튼 방식
         const allEls = document.querySelectorAll('a, span, button, label');
         let inAccountSection = false;
         for (const el of allEls) {
           const t = (el.textContent || '').trim();
           if (t === '연동계정' || t.startsWith('연동계정')) { inAccountSection = true; continue; }
           if (t === '배송준비일' || t === '등록구분' || t.startsWith('배송준비')) { inAccountSection = false; continue; }
-
-          if (!inAccountSection) continue;
-          if (t === '전체 선택' || t === '전체선택' || !t || t.length > 50) continue;
-
-          let shouldSelect = false;
-          if (ch === 'etc') {
-            const isCoupang = ['쿠팡', 'Coupang', 'coupang', 'COUPANG'].some(k => t.includes(k));
-            const isSmart = ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어'].some(k => t.includes(k));
-            shouldSelect = !isCoupang && !isSmart;
-          } else {
-            shouldSelect = kw.some(k => t.includes(k));
-          }
-
-          if (shouldSelect) {
-            el.click();
-            selected.push(t);
-          } else {
-            skipped.push(t);
-          }
+          if (!inAccountSection || t === '전체 선택' || t === '전체선택' || !t || t.length > 50) continue;
+          if (shouldSelect(t)) { el.click(); selected.push(t); }
+          else { skipped.push(t); }
         }
-
         return { count: selected.length, selected, skipped, method: 'tab' };
-      }, CHANNEL, keywords);
+      }, CHANNELS, allKeywords, hasEtc);
 
       addLog(`${channelLabel} 계정 ${selResult.count}개 선택 (방식: ${selResult.method})`);
       for (const s of selResult.selected) addLog(`  선택: "${s}"`);
