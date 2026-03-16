@@ -142,83 +142,164 @@ const cleanLocks = () => {
         addLog('자동 로그인 시도...');
         writeStatus({ triggered: true, status: 'login_auto', time: new Date().toISOString() });
 
-        // 부계정 로그인 모드: "부계정 로그인" 버튼 클릭하여 대표계정 필드 노출
+        // 부계정 로그인 모드: Puppeteer 네이티브 API 사용
         if (LOGIN_TYPE === 'sub') {
           addLog('부계정 로그인 모드 전환...');
-          // 페이지의 모든 텍스트 요소 로깅 (디버그)
-          const allTexts = await page.evaluate(() => {
-            const els = document.querySelectorAll('a, button, span, label, div, p');
-            const texts = [];
-            for (const el of els) {
-              const t = (el.textContent || '').trim();
-              if (t && t.length < 30 && t.length > 1) texts.push(t);
-            }
-            return [...new Set(texts)];
-          });
-          addLog(`페이지 텍스트 요소: ${allTexts.filter(t => t.includes('계정') || t.includes('로그인')).join(', ')}`);
 
-          const clicked = await page.evaluate(() => {
-            const links = document.querySelectorAll('a, button, span, label, div, p');
-            for (const el of links) {
-              const t = (el.textContent || '').trim();
-              // "부계정 로그인", "부계정 로그인 >", "부계정로그인" 등 매칭
-              if (t.includes('부계정')) {
-                el.click();
-                return t;
+          // 이미 부계정 폼인지 확인 (subId 필드가 보이는지)
+          const subIdVisible = await page.evaluate(() => {
+            const el = document.querySelector('input[name="subId"]');
+            return el && el.offsetParent !== null;
+          });
+          if (subIdVisible) {
+            addLog('이미 부계정 폼 상태 (subId 필드 보임)');
+          } else {
+            // XPath로 "부계정 로그인" 텍스트가 포함된 <a> 태그 찾기
+            const subLinks = await page.$$('a');
+            let clickedSub = false;
+            for (const link of subLinks) {
+              const text = await page.evaluate(el => (el.textContent || '').trim(), link);
+              if (text.includes('부계정')) {
+                addLog(`Puppeteer page.click으로 "${text}" 클릭`);
+                await link.click();
+                clickedSub = true;
+                break;
               }
             }
-            return false;
-          });
-          if (clicked) {
-            addLog(`부계정 로그인 폼 전환 성공: "${clicked}"`);
-            await sleep(1500);
-          } else {
-            addLog('부계정 로그인 버튼 못찾음 — 현재 폼으로 진행');
+
+            if (clickedSub) {
+              // subId 필드가 나타날 때까지 대기 (최대 5초)
+              try {
+                await page.waitForSelector('input[name="subId"]', { visible: true, timeout: 5000 });
+                addLog('부계정 폼 전환 확인 (subId 필드 출현)');
+              } catch {
+                addLog('subId 필드 대기 타임아웃 — 그래도 진행');
+              }
+            } else {
+              addLog('부계정 링크 못찾음 — 현재 폼으로 진행');
+            }
           }
+          await sleep(500);
         } else {
           addLog('주계정 로그인 모드');
         }
 
-        // 아이디, 비밀번호 입력
-        await page.evaluate((loginType, repId, id, pw) => {
-          const allInputs = document.querySelectorAll('input[type="text"], input:not([type])');
-          const pwField = document.querySelector('input[type="password"]');
+        // 현재 보이는 입력 필드 분석
+        const visibleInputs = await page.evaluate(() => {
+          const result = [];
+          document.querySelectorAll('input').forEach(inp => {
+            if (inp.offsetParent !== null && inp.type !== 'hidden' && inp.type !== 'checkbox' && inp.type !== 'radio') {
+              result.push({ type: inp.type, name: inp.name || '', placeholder: inp.placeholder || '' });
+            }
+          });
+          return result;
+        });
+        addLog(`입력필드 ${visibleInputs.length}개: ${visibleInputs.map(i => `${i.name}(${i.placeholder})`).join(', ')}`);
 
-          if (loginType === 'sub' && allInputs.length >= 2) {
-            // 부계정: 첫번째=대표계정 아이디, 두번째=아이디
-            const repField = allInputs[0];
-            const idField = allInputs[1];
-            repField.value = repId; repField.dispatchEvent(new Event('input', { bubbles: true }));
-            idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true }));
-          } else {
-            // 주계정: 첫번째=아이디
-            const idField = allInputs[0];
-            if (idField) { idField.value = id; idField.dispatchEvent(new Event('input', { bubbles: true })); }
+        // 입력 필드 초기화 + 값 입력 (Puppeteer 네이티브 page.click + page.type)
+        const clearAndType = async (selector, value, label) => {
+          try {
+            await page.click(selector, { clickCount: 3 }); // 전체 선택
+            await page.keyboard.press('Backspace');
+            await page.type(selector, value, { delay: 50 }); // 느린 타이핑
+            addLog(`  ${label}: 입력 완료`);
+            return true;
+          } catch (e) {
+            addLog(`  ${label}: 입력 실패 - ${e.message}`);
+            return false;
           }
-          if (pwField) { pwField.value = pw; pwField.dispatchEvent(new Event('input', { bubbles: true })); }
-        }, LOGIN_TYPE, REP_ID, LOGIN_ID, LOGIN_PW);
-        if (REP_ID) addLog(`대표계정: ${REP_ID}`);
-        await sleep(500);
+        };
 
-        // 로그인 버튼 클릭
-        await page.evaluate(() => {
-          const btns = document.querySelectorAll('button, input[type="submit"], a');
-          for (const btn of btns) {
-            const text = (btn.textContent || btn.value || '').trim();
-            if (text.includes('로그인') || text.includes('Login') || text.includes('LOGIN')) {
-              btn.click();
-              return;
+        if (LOGIN_TYPE === 'sub') {
+          await clearAndType('input[name="userId"]', REP_ID, '대표계정');
+          await clearAndType('input[name="subId"]', LOGIN_ID, '부계정');
+          await clearAndType('input[name="password"]', LOGIN_PW, '비밀번호');
+        } else {
+          await clearAndType('input[name="userId"]', LOGIN_ID, '아이디');
+          await clearAndType('input[name="password"]', LOGIN_PW, '비밀번호');
+        }
+        await sleep(300);
+
+        // 입력 결과 확인
+        const filledValues = await page.evaluate(() => {
+          const result = [];
+          document.querySelectorAll('input').forEach(inp => {
+            if (inp.offsetParent !== null && inp.type !== 'hidden' && inp.type !== 'checkbox' && inp.type !== 'radio') {
+              result.push({ name: inp.name, value: inp.type === 'password' ? (inp.value ? '****' : '빈값') : (inp.value || '빈값') });
+            }
+          });
+          return result;
+        });
+        addLog(`입력 확인: ${filledValues.map(v => `${v.name}=${v.value}`).join(', ')}`);
+
+        // 히든 필드 & 폼 구조 확인
+        const formInfo = await page.evaluate(() => {
+          const form = document.querySelector('form');
+          if (!form) return { html: 'no form' };
+          const hiddens = [];
+          form.querySelectorAll('input[type="hidden"]').forEach(h => hiddens.push(`${h.name}=${h.value}`));
+          // 로그인 관련 전역 함수
+          const funcs = [];
+          for (const key of Object.keys(window)) {
+            const kl = key.toLowerCase();
+            if (typeof window[key] === 'function' && (kl.includes('login') || kl.includes('signin') || kl === 'fn_login' || kl === 'fnlogin')) {
+              funcs.push(key);
             }
           }
-          // form submit fallback
-          const form = document.querySelector('form');
-          if (form) form.submit();
+          return { action: form.action, method: form.method, hiddens, funcs };
         });
-        addLog('로그인 폼 제출됨');
-        await sleep(3000);
+        addLog(`폼: ${formInfo.method} ${formInfo.action}`);
+        if (formInfo.hiddens.length > 0) addLog(`히든: ${formInfo.hiddens.join(', ')}`);
+        if (formInfo.funcs.length > 0) addLog(`JS함수: ${formInfo.funcs.join(', ')}`);
+
+        // 로그인: 페이지의 login() 함수 직접 호출
+        addLog('login() 함수 호출로 로그인 시도...');
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+          page.evaluate(() => {
+            if (typeof login === 'function') { login(); return; }
+            // fallback: form submit
+            const form = document.querySelector('#frmForm') || document.querySelector('form');
+            if (form) form.submit();
+          })
+        ]);
+        addLog('로그인 제출 완료');
+
+        await sleep(2000);
 
         currentUrl = page.url();
+        addLog(`로그인 후 URL: ${currentUrl}`);
+
         if (currentUrl.includes('Login') || currentUrl.includes('login')) {
+          // 에러 메시지 확인
+          const errorMsg = await page.evaluate(() => {
+            // 일반적인 에러 메시지 위치
+            const errorEls = document.querySelectorAll('.error, .alert, .warning, .msg, .message, [class*=error], [class*=alert], [class*=warn], [role=alert]');
+            for (const el of errorEls) {
+              const t = (el.textContent || '').trim();
+              if (t && t.length < 100 && el.offsetParent !== null) return t;
+            }
+            // 페이지 전체에서 에러 키워드 찾기
+            const body = document.body?.innerText || '';
+            const lines = body.split('\n').map(l => l.trim()).filter(l => l.length > 0 && l.length < 80);
+            const errorLines = lines.filter(l => l.includes('실패') || l.includes('오류') || l.includes('틀렸') || l.includes('확인해') || l.includes('일치하지'));
+            return errorLines.length > 0 ? errorLines.join(' / ') : null;
+          });
+          if (errorMsg) addLog(`로그인 에러: ${errorMsg}`);
+          else addLog('에러 메시지 없음 — 로그인 버튼이 동작하지 않았을 수 있음');
+
+          // 현재 입력 필드 상태 재확인
+          const currentValues = await page.evaluate(() => {
+            const result = [];
+            document.querySelectorAll('input').forEach(inp => {
+              if (inp.offsetParent !== null && inp.type !== 'hidden' && inp.type !== 'checkbox' && inp.type !== 'radio') {
+                result.push({ name: inp.name, value: inp.type === 'password' ? (inp.value ? '****' : '빈값') : (inp.value || '빈값'), placeholder: inp.placeholder });
+              }
+            });
+            return result;
+          });
+          addLog(`현재 필드 상태: ${currentValues.map(v => `${v.name}=${v.value}`).join(', ')}`);
+
           addLog('자동 로그인 실패 — 수동 로그인 필요');
           writeStatus({ triggered: true, status: 'login_required', time: new Date().toISOString() });
         } else {
