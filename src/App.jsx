@@ -811,16 +811,19 @@ export default function App() {
   const [importChannel,setImportChannel]=useState("all");
   const [showImportPanel,setShowImportPanel]=useState(false);
   const [showChannelMenu,setShowChannelMenu]=useState(false);
+  const importStopRef=useRef(false);
   useEffect(()=>{if(!showChannelMenu)return;const h=()=>setShowChannelMenu(false);setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
   const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
   const stopImport=async()=>{
-    try{await fetch('/api/stop-import',{method:'POST'});}catch{}
+    importStopRef.current=true;
     setImportStatus(prev=>({running:false,result:{success:false,message:'사용자가 중지함'},statusText:"",logs:prev.logs,channel:prev.channel}));
     showToast("연동 가져오기 중지됨","error");
+    try{fetch('/api/stop-import',{method:'POST'});}catch{}
   };
   const triggerImport=async(ch)=>{
     const channel=ch||importChannel;
     if(importStatus.running)return;
+    importStopRef.current=false;
     const channelLabel=importChannels.find(c=>c.value===channel)?.label||channel;
     setImportStatus({running:true,result:null,statusText:"웨일 브라우저 실행중...",logs:[{time:new Date().toISOString(),msg:`${channelLabel} 연동 시작`}],channel});
     setShowImportPanel(true);
@@ -829,18 +832,22 @@ export default function App() {
       const r=await fetch('/api/trigger-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel})});
       const d=await r.json();
       if(d.ok){
-        const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
+        const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
         let done=false;let lastStatus="";let sameCount=0;
         for(let i=0;i<120&&!done;i++){
           await new Promise(r=>setTimeout(r,2000));
+          if(importStopRef.current){done=true;break;}
           try{
             const sr=await fetch('/api/import-status?_='+Date.now());
             const sd=await sr.json();
+            if(importStopRef.current){done=true;break;}
             const label=statusLabels[sd.status]||sd.status||"처리중...";
             const newLogs=sd.logs||[];
-            setImportStatus(prev=>({...prev,statusText:label+(sd.count?` (${sd.count}건)`:""),logs:newLogs.length>0?newLogs:prev.logs}));
+            setImportStatus(prev=>{
+              if(importStopRef.current)return prev;
+              return{...prev,statusText:label+(sd.count?` (${sd.count}건)`:""),logs:newLogs.length>0?newLogs:prev.logs};
+            });
             if(sd.status==='login_required'&&i%5===0)showToast("웨일 브라우저에서 발주모아 로그인해주세요","error");
-            // 완료/오류/중지 감지
             if(!sd.triggered&&(sd.status==='done'||sd.status==='error'||sd.status==='stopped')){
               done=true;
               setImportStatus(prev=>({running:false,result:sd.result||{success:false},statusText:"",logs:sd.logs||prev.logs,channel}));
@@ -848,20 +855,19 @@ export default function App() {
               else if(sd.status==='stopped')showToast("연동 가져오기 중지됨","error");
               else showToast(`연동 오류: ${sd.result?.error||"알 수 없는 오류"}`,"error");
             }
-            // 상태 변화 없이 60초(30회) 지속되면 프로세스 죽은 것으로 판단
             if(sd.status===lastStatus){sameCount++;}else{sameCount=0;lastStatus=sd.status;}
             if(sameCount>=30&&sd.status!=='login_required'){
               done=true;
               setImportStatus(prev=>({running:false,result:{success:false,message:'응답 없음 — 프로세스 종료됨'},statusText:"",logs:prev.logs,channel}));
               showToast("연동 프로세스 응답 없음 — 자동 중지됨","error");
-              try{await fetch('/api/stop-import',{method:'POST'});}catch{}
+              try{fetch('/api/stop-import',{method:'POST'});}catch{}
             }
           }catch{}
         }
         if(!done){
           setImportStatus(prev=>({running:false,result:{message:'타임아웃'},statusText:"",logs:prev.logs,channel}));
           showToast("연동 시간 초과 — 브라우저를 확인해주세요","error");
-          try{await fetch('/api/stop-import',{method:'POST'});}catch{}
+          try{fetch('/api/stop-import',{method:'POST'});}catch{}
         }
       }
     }catch(e){
@@ -1165,16 +1171,17 @@ export default function App() {
                     {importStatus.channel&&<span style={{fontSize:12,color:"#9CA3AF",background:"#1F2937",padding:"2px 10px",borderRadius:8,fontWeight:600}}>{importChannels.find(c=>c.value===importStatus.channel)?.label||importStatus.channel}</span>}
                   </div>
                   <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                    {importStatus.result&&<span style={{fontSize:12,padding:"3px 10px",borderRadius:8,fontWeight:600,background:importStatus.result.success?"#065F46":"#7F1D1D",color:importStatus.result.success?"#6EE7B7":"#FCA5A5"}}>{importStatus.result.success?`${importStatus.result.count||0}건 완료`:`오류: ${importStatus.result.error||""}`}</span>}
+                    {importStatus.result&&<span style={{fontSize:12,padding:"3px 10px",borderRadius:8,fontWeight:600,background:importStatus.result.success?"#065F46":importStatus.result.message?.includes("중지")?"#78350F":"#7F1D1D",color:importStatus.result.success?"#6EE7B7":importStatus.result.message?.includes("중지")?"#FDE68A":"#FCA5A5"}}>{importStatus.result.success?`${importStatus.result.count||0}건 완료`:importStatus.result.message||`오류: ${importStatus.result.error||""}`}</span>}
                     <div onClick={()=>setShowImportPanel(false)} style={{cursor:"pointer",color:"#6B7280",fontSize:18,lineHeight:1}}>✕</div>
                   </div>
                 </div>
-                <div style={{maxHeight:180,overflowY:"auto",fontSize:13,fontFamily:"'Consolas','Courier New',monospace",lineHeight:1.7}}>
+                <div style={{maxHeight:260,overflowY:"auto",fontSize:12,fontFamily:"'Consolas','Courier New',monospace",lineHeight:1.8}}>
                   {importStatus.logs.length===0?<div style={{color:"#6B7280",padding:"8px 0"}}>아직 로그가 없습니다. 연동 가져오기를 실행해주세요.</div>:
-                  importStatus.logs.map((log,i)=><div key={i} style={{color:log.msg.includes("오류")?"#FCA5A5":log.msg.includes("완료")?"#6EE7B7":log.msg.includes("필요")?"#FCD34D":"#D1D5DB",display:"flex",gap:10}}>
-                    <span style={{color:"#4B5563",flexShrink:0}}>{new Date(log.time).toLocaleTimeString("ko-KR")}</span>
-                    <span>{log.msg}</span>
-                  </div>)}
+                  importStatus.logs.map((log,i)=>{const isErr=log.msg.includes("오류")||log.msg.includes("실패")||log.msg.includes("타임아웃");const isOk=log.msg.includes("완료")||log.msg.includes("성공");const isWarn=log.msg.includes("필요")||log.msg.includes("대기")||log.msg.includes("fallback");const isInfo=log.msg.includes("선택")||log.msg.includes("계정")||log.msg.includes("체크");const color=isErr?"#FCA5A5":isOk?"#6EE7B7":isWarn?"#FCD34D":isInfo?"#93C5FD":"#D1D5DB";const prefix=isErr?"[ERR]":isOk?"[OK]":isWarn?"[!!]":isInfo?"[i]":"[>]";const prefixColor=isErr?"#EF4444":isOk?"#10B981":isWarn?"#F59E0B":isInfo?"#3B82F6":"#6B7280";return<div key={i} style={{color,display:"flex",gap:8,padding:"1px 0"}}>
+                    <span style={{color:"#4B5563",flexShrink:0,minWidth:72}}>{new Date(log.time).toLocaleTimeString("ko-KR")}</span>
+                    <span style={{color:prefixColor,flexShrink:0,minWidth:32,fontWeight:700}}>{prefix}</span>
+                    <span style={{wordBreak:"break-all"}}>{log.msg}</span>
+                  </div>})}
                 </div>
               </div>}
 
