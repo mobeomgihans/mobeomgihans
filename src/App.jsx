@@ -860,13 +860,15 @@ export default function App() {
       const d=await r.json();
       if(d.ok){
         const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_auto:"자동 로그인중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
-        let done=false;let lastStatus="";let sameCount=0;const channel=channelStr;
+        let done=false;let lastStatus="";let sameCount=0;let errCount=0;const channel=channelStr;
         for(let i=0;i<120&&!done;i++){
           await new Promise(r=>setTimeout(r,2000));
           if(importStopRef.current){done=true;break;}
           try{
             const sr=await fetch('/api/import-status?_='+Date.now());
-            const sd=await sr.json();
+            const text=await sr.text();
+            let sd;try{sd=JSON.parse(text);}catch{errCount++;if(errCount>=10){done=true;setImportStatus(prev=>({running:false,result:{success:false,message:'서버 응답 오류'},statusText:"",logs:prev.logs,channel}));showToast("서버 응답 오류 — 자동 중지됨","error");}continue;}
+            errCount=0;
             if(importStopRef.current){done=true;break;}
             const label=statusLabels[sd.status]||sd.status||"처리중...";
             const newLogs=sd.logs||[];

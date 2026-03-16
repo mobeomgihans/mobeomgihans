@@ -145,20 +145,33 @@ const cleanLocks = () => {
         // 부계정 로그인 모드: "부계정 로그인" 버튼 클릭하여 대표계정 필드 노출
         if (LOGIN_TYPE === 'sub') {
           addLog('부계정 로그인 모드 전환...');
+          // 페이지의 모든 텍스트 요소 로깅 (디버그)
+          const allTexts = await page.evaluate(() => {
+            const els = document.querySelectorAll('a, button, span, label, div, p');
+            const texts = [];
+            for (const el of els) {
+              const t = (el.textContent || '').trim();
+              if (t && t.length < 30 && t.length > 1) texts.push(t);
+            }
+            return [...new Set(texts)];
+          });
+          addLog(`페이지 텍스트 요소: ${allTexts.filter(t => t.includes('계정') || t.includes('로그인')).join(', ')}`);
+
           const clicked = await page.evaluate(() => {
-            const links = document.querySelectorAll('a, button, span, label, div');
+            const links = document.querySelectorAll('a, button, span, label, div, p');
             for (const el of links) {
               const t = (el.textContent || '').trim();
-              if (t.includes('부계정') && t.includes('로그인')) {
+              // "부계정 로그인", "부계정 로그인 >", "부계정로그인" 등 매칭
+              if (t.includes('부계정')) {
                 el.click();
-                return true;
+                return t;
               }
             }
             return false;
           });
           if (clicked) {
-            addLog('부계정 로그인 폼 전환 성공');
-            await sleep(1000);
+            addLog(`부계정 로그인 폼 전환 성공: "${clicked}"`);
+            await sleep(1500);
           } else {
             addLog('부계정 로그인 버튼 못찾음 — 현재 폼으로 진행');
           }
