@@ -152,36 +152,67 @@ const cleanLocks = () => {
         if (sa && !sa.classList.contains('active')) sa.click();
       });
     } else {
-      addLog(`${channelLabel} 계정 선택...`);
-      // 먼저 전체 해제 후 특정 채널만 선택
+      addLog(`${channelLabel} 계정만 선택...`);
+
+      // 1. 먼저 전체 선택 → 전체 해제 (모든 체크박스 초기화)
+      await page.evaluate(() => {
+        const sa = document.querySelector('.link_selectAll');
+        if (sa && !sa.classList.contains('active')) sa.click(); // 전체 선택
+      });
+      await sleep(300);
       await page.evaluate(() => {
         const sa = document.querySelector('.link_selectAll');
         if (sa && sa.classList.contains('active')) sa.click(); // 전체 해제
       });
-      await sleep(300);
+      await sleep(500);
 
+      // 2. 해당 채널 키워드로 개별 계정 체크박스 선택
       const channelKeywords = {
-        coupang: ['쿠팡', 'Coupang', 'coupang'],
-        smartstore: ['스마트스토어', 'SmartStore', 'smartstore', '네이버'],
-        etc: [] // 쿠팡, 스마트스토어 제외한 나머지
+        coupang: ['쿠팡', 'Coupang', 'coupang', 'COUPANG'],
+        smartstore: ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어', 'SMARTSTORE'],
+        etc: []
       };
 
       const selectedCount = await page.evaluate((ch, keywords) => {
-        const items = document.querySelectorAll('.link_item, .account_item, [class*=link_list] li, [class*=account] li');
+        // 모든 체크박스를 가진 요소 탐색 (다양한 셀렉터)
+        const checkboxes = document.querySelectorAll('input[type=checkbox]');
         let count = 0;
-        for (const item of items) {
-          const text = item.textContent || '';
-          const cb = item.querySelector('input[type=checkbox]') || item;
-          const isClickable = cb.click !== undefined;
+        for (const cb of checkboxes) {
+          if (cb.id === 'chkCheckDataAll') continue; // 전체선택 체크박스 스킵
+          // 체크박스의 부모/형제에서 텍스트 확인
+          const parent = cb.closest('li, tr, div, label, span') || cb.parentElement;
+          if (!parent) continue;
+          const text = parent.textContent || '';
+          // 이미 해제된 상태인지 확인
+          const isChecked = cb.checked;
 
           if (ch === 'etc') {
-            // 쿠팡, 스마트스토어가 아닌 것만 선택
-            const isCoupang = ['쿠팡', 'Coupang', 'coupang'].some(k => text.includes(k));
-            const isSmart = ['스마트스토어', 'SmartStore', 'smartstore', '네이버'].some(k => text.includes(k));
-            if (!isCoupang && !isSmart && isClickable) { cb.click(); count++; }
+            const isCoupang = ['쿠팡', 'Coupang', 'coupang', 'COUPANG'].some(k => text.includes(k));
+            const isSmart = ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어'].some(k => text.includes(k));
+            if (!isCoupang && !isSmart && !isChecked) {
+              cb.click(); count++;
+            }
           } else {
             const match = keywords.some(k => text.includes(k));
-            if (match && isClickable) { cb.click(); count++; }
+            if (match && !isChecked) {
+              cb.click(); count++;
+            }
+          }
+        }
+
+        // 체크박스 못 찾으면 클릭 가능한 계정 아이템으로 시도
+        if (count === 0) {
+          const items = document.querySelectorAll('[class*=link] li, [class*=account] li, .link_item, .account_item');
+          for (const item of items) {
+            const text = item.textContent || '';
+            if (ch === 'etc') {
+              const isCoupang = ['쿠팡', 'Coupang'].some(k => text.includes(k));
+              const isSmart = ['스마트스토어', 'SmartStore'].some(k => text.includes(k));
+              if (!isCoupang && !isSmart) { item.click(); count++; }
+            } else {
+              const match = keywords.some(k => text.includes(k));
+              if (match) { item.click(); count++; }
+            }
           }
         }
         return count;
@@ -189,7 +220,6 @@ const cleanLocks = () => {
 
       addLog(`${channelLabel} 계정 ${selectedCount}개 선택됨`);
 
-      // 개별 선택이 안되면 전체 선택 fallback
       if (selectedCount === 0) {
         addLog('개별 선택 실패 — 전체 계정으로 fallback');
         await page.evaluate(() => {
@@ -336,16 +366,44 @@ const cleanLocks = () => {
 
     if (regComplete) {
       addLog('등록 완료!');
-      await page.evaluate(() => {
-        const btns = document.querySelectorAll('button');
-        for (const btn of btns) {
-          const t = btn.textContent.trim();
-          if ((t === '닫기' || t === '닫 기') && btn.offsetParent !== null) { btn.click(); return; }
-        }
-      });
     } else {
-      addLog('등록 타임아웃 — 수동 확인 필요');
+      addLog('등록 타임아웃 — 모달 정리 시도');
     }
+
+    // ─── 모달 정리: 확인 → 닫기 순서로 클릭 ─────────
+    await sleep(1000);
+
+    // Step A: "연동계정에서 가져온 주문 결과" 확인 버튼 클릭
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll('button');
+      for (const btn of btns) {
+        const t = btn.textContent.trim();
+        if (t === '확인' && btn.offsetParent !== null) { btn.click(); break; }
+      }
+    });
+    await sleep(1000);
+
+    // Step B: "처리 내용 저장" 또는 "닫 기" 버튼 클릭
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll('button');
+      for (const btn of btns) {
+        const t = btn.textContent.trim();
+        if ((t === '닫기' || t === '닫 기') && btn.offsetParent !== null) { btn.click(); return; }
+      }
+    });
+    await sleep(500);
+
+    // Step C: 혹시 남은 모달 전부 닫기
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll('button');
+      for (const btn of btns) {
+        const t = btn.textContent.trim();
+        if ((t === '닫기' || t === '닫 기' || t === '확인' || t === '처리 내용 저장') && btn.offsetParent !== null) {
+          btn.click();
+        }
+      }
+    });
+    await sleep(500);
 
     // confirm/alert 복원
     await page.evaluate(() => {
@@ -360,7 +418,7 @@ const cleanLocks = () => {
     await notifyDone(result);
 
     // 브라우저 닫기
-    await sleep(3000);
+    await sleep(2000);
     await browser.disconnect();
     try { process.kill(whaleProc.pid); } catch {}
 
