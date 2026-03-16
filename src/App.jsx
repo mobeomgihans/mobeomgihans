@@ -538,13 +538,10 @@ export default function App() {
       {t:new Date(now-30000).toLocaleTimeString("ko-KR"),sys:"발주자동화",msg:"양방향 미러링 동기화 완료 ✓",type:"sync"},
     ];
   });
-  const [mcpAutoSync,setMcpAutoSync]=useState(true);
-  const [mcpSyncInterval,setMcpSyncInterval]=useState(30);
   const mcpLogRef=useRef(null);
 
-  // MCP 자동 동기화 타이머 — fg-sync.json 파일 변경 감지
+  // fg-sync.json 자동 폴링 (30초 간격, 항상 실행)
   useEffect(()=>{
-    if(!mcpAutoSync) return;
     const doAutoSync=async()=>{
       const now=new Date();
       const timeStr=now.toLocaleTimeString("ko-KR");
@@ -566,66 +563,14 @@ export default function App() {
             flexgate:{connected:true,syncing:false,lastSync:syncStr,orders:fgCount,latency:25+Math.floor(Math.random()*35)},
             automation:{connected:true,syncing:false,lastSync:syncStr,orders:newOrders.length,latency:0},
           });
-          setMcpLogs(prev=>[...prev.slice(-30),{t:timeStr,sys:"MCP Bridge",msg:`자동 동기화 완료 — ${isV2?'양방향':'플지만'} — 발모 ${bjCount}건 / 플지 ${fgCount}건 / 매칭 ${matchCount}건`,type:"sync"}]);
         }
       }catch(e){
         setMcpStatus(prev=>({...prev,baljumoa:{...prev.baljumoa,syncing:false,lastSync:syncStr},flexgate:{...prev.flexgate,syncing:false,lastSync:syncStr}}));
-        setMcpLogs(prev=>[...prev.slice(-30),{t:timeStr,sys:"MCP Bridge",msg:"자동 동기화 완료 (캐시 모드)",type:"sync"}]);
       }
     };
-    const timer=setInterval(doAutoSync,mcpSyncInterval*1000);
+    const timer=setInterval(doAutoSync,30000);
     return ()=>clearInterval(timer);
-  },[mcpAutoSync,mcpSyncInterval]);
-
-  const mcpManualSync=async()=>{
-    const now=new Date();
-    const timeStr=now.toLocaleTimeString("ko-KR");
-    setMcpLogs(prev=>[...prev.slice(-30),{t:timeStr,sys:"사용자",msg:"🔄 수동 동기화 요청 → MCP Bridge 호출",type:"action"}]);
-    setMcpStatus(prev=>({...prev,baljumoa:{...prev.baljumoa,syncing:true},flexgate:{...prev.flexgate,syncing:true},automation:{...prev.automation,syncing:true}}));
-    try{
-      // 1) 시그널 파일 생성 (Claude Code가 감지하여 실시간 추출)
-      fetch('/api/request-sync',{method:'POST'}).catch(()=>{});
-      // 2) fg-sync.json 즉시 읽기 + 최대 8초간 live 데이터 대기
-      let data=null;
-      const startT=Date.now();
-      while(Date.now()-startT<8000){
-        const res=await fetch('/fg-sync.json?_='+Date.now());
-        if(res.ok){
-          const d=await res.json();
-          const isLiveSrc=d.source==='mcp-dual-live'||d.source==='flexgate-mcp-bridge-live';
-          if(isLiveSrc&&Date.now()-new Date(d.lastSync).getTime()<10000){data=d;break;}
-          if(!data) data=d;
-        }
-        await new Promise(r=>setTimeout(r,800));
-      }
-      if(!data){const res=await fetch('/fg-sync.json?_='+Date.now());if(res.ok)data=await res.json();}
-      if(!data) throw new Error('no data');
-      const newOrders=generateOrders(data);
-      setOrders(newOrders);
-      const syncStr=new Date().toLocaleString("ko-KR");
-      const fgCount=newOrders.filter(o=>o.site==='flexgate'||o.site==='both').length;
-      const bjCount=newOrders.filter(o=>o.site==='baljumoa'||o.site==='both').length;
-      const matchCount=newOrders.filter(o=>o.site==='both').length;
-      const isV2=data.version===2;
-      const isLive=(data.source==='mcp-dual-live'||data.source==='flexgate-mcp-bridge-live')&&Date.now()-new Date(data.lastSync).getTime()<10000;
-      setSyncMeta({source:data.source||'cache',fgCount,bjCount,matchCount});
-      setMcpStatus({
-        baljumoa:{connected:true,syncing:false,lastSync:syncStr,orders:bjCount,latency:28+Math.floor(Math.random()*20)},
-        flexgate:{connected:true,syncing:false,lastSync:syncStr,orders:fgCount,latency:22+Math.floor(Math.random()*25)},
-        automation:{connected:true,syncing:false,lastSync:syncStr,orders:newOrders.length,latency:0},
-      });
-      setMcpLogs(prev=>[...prev.slice(-30),
-        {t:new Date().toLocaleTimeString("ko-KR"),sys:"MCP Bridge",msg:`✅ ${isV2?'양방향':'플지'} 수신 — 플지 ${fgCount} / 발모 ${bjCount} / 매칭 ${matchCount}건 (${isLive?'실시간':'캐시'})`,type:"sync"},
-        {t:new Date().toLocaleTimeString("ko-KR"),sys:"발주자동화",msg:`전체 ${newOrders.length}건 동기화 완료`,type:"sync"},
-      ]);
-      showToast(`✅ MCP ${isV2?'양방향':'단방향'}: 플지 ${fgCount} / 발모 ${bjCount} / 매칭 ${matchCount}건 (${isLive?'실시간':'캐시'})`);
-    }catch(e){
-      const syncStr=new Date().toLocaleString("ko-KR");
-      setMcpStatus(prev=>({...prev,baljumoa:{...prev.baljumoa,syncing:false,lastSync:syncStr},flexgate:{...prev.flexgate,syncing:false,lastSync:syncStr},automation:{...prev.automation,syncing:false,lastSync:syncStr}}));
-      setMcpLogs(prev=>[...prev.slice(-30),{t:new Date().toLocaleTimeString("ko-KR"),sys:"MCP Bridge",msg:"동기화 실패 — 데이터 없음",type:"sync"}]);
-      showToast("MCP 동기화 실패");
-    }
-  };
+  },[]);
 
   // ─── Automation Engine State ──────────────────────────
   const [autoLogs,setAutoLogs]=useState([]);
@@ -844,6 +789,52 @@ export default function App() {
     if(selected.length===1)return selected[0];
     return{label:selected.map(c=>c.label).join(", "),emoji:selected.map(c=>c.emoji).join(""),color:"#374151",bg:"#F9FAFB",border:"#E5E7EB",hoverBg:"#F3F4F6"};
   };
+  // ─── 연동 스케줄 ───
+  const [importSchedule,setImportSchedule]=useState(()=>{try{const s=localStorage.getItem("importSchedule");if(s)return JSON.parse(s);}catch{}return[];});
+  const [showScheduleMenu,setShowScheduleMenu]=useState(false);
+  const [scheduleEnabled,setScheduleEnabled]=useState(()=>{try{return localStorage.getItem("scheduleEnabled")!=="false";}catch{return true;}});
+  const [scheduleHour,setScheduleHour]=useState(9);
+  const [scheduleMinute,setScheduleMinute]=useState(0);
+  const lastScheduleRunRef=useRef({});
+  const saveSchedule=(list)=>{setImportSchedule(list);try{localStorage.setItem("importSchedule",JSON.stringify(list));}catch{}};
+  const addScheduleTime=()=>{
+    if(importSchedule.some(s=>s.hour===scheduleHour&&s.minute===scheduleMinute))return;
+    saveSchedule([...importSchedule,{hour:scheduleHour,minute:scheduleMinute}].sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute));
+  };
+  const removeScheduleTime=(idx)=>saveSchedule(importSchedule.filter((_,i)=>i!==idx));
+  const toggleScheduleEnabled=()=>{const next=!scheduleEnabled;setScheduleEnabled(next);try{localStorage.setItem("scheduleEnabled",String(next));}catch{}};
+  const getNextSchedule=()=>{
+    if(importSchedule.length===0)return null;
+    const now=new Date();const nowMin=now.getHours()*60+now.getMinutes();
+    const sorted=[...importSchedule].sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute);
+    const next=sorted.find(s=>s.hour*60+s.minute>nowMin);
+    if(next){const diff=next.hour*60+next.minute-nowMin;return{...next,diff};}
+    // 내일 첫 스케줄
+    const first=sorted[0];return{...first,diff:1440-nowMin+first.hour*60+first.minute,tomorrow:true};
+  };
+  useEffect(()=>{if(!showScheduleMenu)return;const h=(e)=>{if(!e.target.closest('[data-schedule-menu]'))setShowScheduleMenu(false)};setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showScheduleMenu]);
+
+  // 스케줄 타이머 — 매 30초 체크
+  useEffect(()=>{
+    if(!scheduleEnabled||importSchedule.length===0)return;
+    const check=()=>{
+      if(importStatus.running)return;
+      const now=new Date();const h=now.getHours(),m=now.getMinutes();
+      const today=now.toISOString().slice(0,10);
+      for(const s of importSchedule){
+        if(s.hour===h&&s.minute===m){
+          const key=`${s.hour}:${s.minute}`;
+          if(lastScheduleRunRef.current[key]!==today){
+            lastScheduleRunRef.current[key]=today;
+            triggerImport();
+          }
+        }
+      }
+    };
+    const timer=setInterval(check,30000);check();
+    return()=>clearInterval(timer);
+  },[scheduleEnabled,importSchedule,importStatus.running]);
+
   const stopImport=(e)=>{
     if(e)e.stopPropagation();
     importStopRef.current=true;
@@ -1172,11 +1163,45 @@ export default function App() {
                   <div style={{fontSize:28,fontWeight:800,color:"#111",letterSpacing:"-0.03em"}}>안녕하세요, <span style={{color:theme.accent}}>{myProfile.name}</span>님</div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:12}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",borderRadius:12,background:mcpAutoSync?"#F0FDF4":"#F3F4F6",border:mcpAutoSync?"1.5px solid #BBF7D0":"1.5px solid #E5E7EB",cursor:"pointer",fontSize:14,fontWeight:600,color:mcpAutoSync?"#16A34A":"#888"}} onClick={()=>setMcpAutoSync(!mcpAutoSync)}>
-                    <div style={{width:8,height:8,borderRadius:"50%",background:mcpAutoSync?"#22C55E":"#D1D5DB"}}/>
-                    자동동기화 {mcpAutoSync?"ON":"OFF"}
+                  {/* ⏰ 스케줄 버튼 */}
+                  <div style={{position:"relative"}} data-schedule-menu>
+                    <div onClick={()=>setShowScheduleMenu(!showScheduleMenu)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",borderRadius:12,background:scheduleEnabled&&importSchedule.length>0?"#F0FDF4":"#F3F4F6",border:scheduleEnabled&&importSchedule.length>0?"1.5px solid #BBF7D0":"1.5px solid #E5E7EB",cursor:"pointer",fontSize:14,fontWeight:600,color:scheduleEnabled&&importSchedule.length>0?"#16A34A":"#888",transition:"all 0.2s"}}>
+                      <span>⏰</span>
+                      {importSchedule.length>0?importSchedule.map(s=>`${String(s.hour).padStart(2,"0")}:${String(s.minute).padStart(2,"0")}`).join(", "):"스케줄"}
+                    </div>
+                    {showScheduleMenu&&<div style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",zIndex:100,minWidth:280,padding:0,overflow:"hidden"}}>
+                      {/* 헤더 */}
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 18px",borderBottom:"1px solid #F3F4F6"}}>
+                        <span style={{fontSize:15,fontWeight:700,color:"#111"}}>⏰ 연동 스케줄</span>
+                        <div onClick={e=>{e.stopPropagation();toggleScheduleEnabled()}} style={{width:44,height:24,borderRadius:12,background:scheduleEnabled?"#22C55E":"#D1D5DB",cursor:"pointer",position:"relative",transition:"background 0.2s"}}>
+                          <div style={{width:20,height:20,borderRadius:10,background:"#fff",position:"absolute",top:2,left:scheduleEnabled?22:2,transition:"left 0.2s",boxShadow:"0 1px 3px rgba(0,0,0,0.2)"}}/>
+                        </div>
+                      </div>
+                      {/* 시간 목록 */}
+                      <div style={{padding:"6px 0",maxHeight:200,overflowY:"auto"}}>
+                        {importSchedule.length===0&&<div style={{padding:"16px 18px",fontSize:13,color:"#9CA3AF",textAlign:"center"}}>설정된 스케줄이 없습니다</div>}
+                        {importSchedule.map((s,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 18px",fontSize:14,color:"#374151"}} onMouseOver={e=>e.currentTarget.style.background="#F9FAFB"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+                          <span style={{fontWeight:600,fontVariantNumeric:"tabular-nums"}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
+                          <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px"}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
+                        </div>)}
+                      </div>
+                      {/* 시간 추가 */}
+                      <div style={{display:"flex",alignItems:"center",gap:6,padding:"10px 18px",borderTop:"1px solid #F3F4F6"}}>
+                        <select value={scheduleHour} onChange={e=>setScheduleHour(Number(e.target.value))} style={{padding:"6px 8px",borderRadius:8,border:"1.5px solid #E5E7EB",fontSize:13,fontWeight:600,background:"#fff",cursor:"pointer"}}>
+                          {Array.from({length:24},(_,i)=>i).map(h=><option key={h} value={h}>{String(h).padStart(2,"0")}</option>)}
+                        </select>
+                        <span style={{fontWeight:700,color:"#9CA3AF"}}>:</span>
+                        <select value={scheduleMinute} onChange={e=>setScheduleMinute(Number(e.target.value))} style={{padding:"6px 8px",borderRadius:8,border:"1.5px solid #E5E7EB",fontSize:13,fontWeight:600,background:"#fff",cursor:"pointer"}}>
+                          {[0,30].map(m=><option key={m} value={m}>{String(m).padStart(2,"0")}</option>)}
+                        </select>
+                        <div onClick={e=>{e.stopPropagation();addScheduleTime()}} style={{marginLeft:"auto",padding:"6px 14px",borderRadius:8,background:"#F0FDF4",border:"1.5px solid #BBF7D0",color:"#16A34A",fontSize:13,fontWeight:700,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.background="#DCFCE7"} onMouseOut={e=>e.currentTarget.style.background="#F0FDF4"}>+ 추가</div>
+                      </div>
+                      {/* 다음 실행 시간 */}
+                      {scheduleEnabled&&importSchedule.length>0&&(()=>{const n=getNextSchedule();if(!n)return null;const hm=`${String(n.hour).padStart(2,"0")}:${String(n.minute).padStart(2,"0")}`;const diffH=Math.floor(n.diff/60);const diffM=n.diff%60;const diffStr=diffH>0?`${diffH}시간${diffM>0?` ${diffM}분`:""}`:diffM>0?`${diffM}분`:"곧";return<div style={{padding:"10px 18px",borderTop:"1px solid #F3F4F6",fontSize:12,color:"#6B7280",display:"flex",alignItems:"center",gap:6}}>
+                        <span>▶</span> 다음 실행: <span style={{fontWeight:700,color:"#16A34A"}}>{hm}</span> <span style={{color:"#9CA3AF"}}>({n.tomorrow?"내일 ":""}{diffStr} 후)</span>
+                      </div>})()}
+                    </div>}
                   </div>
-                  <Btn onClick={mcpManualSync} variant="primary" style={{padding:"10px 20px",fontSize:14,borderRadius:12}}>🔄 수동 동기화</Btn>
                   <div style={{position:"relative",display:"flex",alignItems:"center",gap:6}}>
                     {(()=>{const ch=getChannelDisplay();return<div style={{display:"flex",alignItems:"center",gap:0,borderRadius:12,background:importStatus.running?"#FFFBEB":ch.bg,border:importStatus.running?"1.5px solid #FDE68A":`1.5px solid ${ch.border}`,overflow:"hidden",transition:"all 0.2s"}}>
                       <div onClick={()=>importStatus.running?setShowImportPanel(true):triggerImport()} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",cursor:importStatus.running?"default":"pointer",fontSize:14,fontWeight:600,color:importStatus.running?"#92400E":ch.color}} onMouseOver={e=>{if(!importStatus.running)e.currentTarget.style.background=ch.hoverBg}} onMouseOut={e=>{e.currentTarget.style.background="transparent"}}>
