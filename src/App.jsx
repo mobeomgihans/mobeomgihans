@@ -795,12 +795,22 @@ export default function App() {
   const [scheduleEnabled,setScheduleEnabled]=useState(()=>{try{return localStorage.getItem("scheduleEnabled")!=="false";}catch{return true;}});
   const [scheduleHour,setScheduleHour]=useState(9);
   const [scheduleMinute,setScheduleMinute]=useState(0);
+  const [editingScheduleIdx,setEditingScheduleIdx]=useState(null); // 수정 중인 스케줄 인덱스
   const lastScheduleRunRef=useRef({});
   const saveSchedule=(list)=>{setImportSchedule(list);try{localStorage.setItem("importSchedule",JSON.stringify(list));}catch{}};
   const addScheduleTime=()=>{
+    if(editingScheduleIdx!==null){
+      // 수정 모드
+      const list=[...importSchedule];
+      list[editingScheduleIdx]={...list[editingScheduleIdx],hour:scheduleHour,minute:scheduleMinute};
+      saveSchedule(list.sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute));
+      setEditingScheduleIdx(null);
+      return;
+    }
     if(importSchedule.some(s=>s.hour===scheduleHour&&s.minute===scheduleMinute))return;
     saveSchedule([...importSchedule,{hour:scheduleHour,minute:scheduleMinute,channel:[...importChannel]}].sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute));
   };
+  const startEditSchedule=(idx)=>{const s=importSchedule[idx];setScheduleHour(s.hour);setScheduleMinute(s.minute);setEditingScheduleIdx(idx);};
   const removeScheduleTime=(idx)=>saveSchedule(importSchedule.filter((_,i)=>i!==idx));
   const updateScheduleChannel=(idx,ch)=>{const list=[...importSchedule];list[idx]={...list[idx],channel:ch};saveSchedule(list);};
   const toggleScheduleEnabled=()=>{const next=!scheduleEnabled;setScheduleEnabled(next);try{localStorage.setItem("scheduleEnabled",String(next));}catch{}};
@@ -1183,7 +1193,7 @@ export default function App() {
                         {importSchedule.length===0&&<div style={{padding:"16px 18px",fontSize:13,color:"#9CA3AF",textAlign:"center"}}>설정된 스케줄이 없습니다</div>}
                         {importSchedule.map((s,i)=>{const sCh=s.channel||["all"];return<div key={i} style={{padding:"10px 18px",borderBottom:"1px solid #F9FAFB"}}>
                           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-                            <span style={{fontWeight:700,fontSize:15,fontVariantNumeric:"tabular-nums",color:"#111"}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
+                            <span onClick={e=>{e.stopPropagation();startEditSchedule(i)}} style={{fontWeight:700,fontSize:15,fontVariantNumeric:"tabular-nums",color:editingScheduleIdx===i?"#2563EB":"#111",cursor:"pointer",borderBottom:editingScheduleIdx===i?"2px solid #2563EB":"2px solid transparent",paddingBottom:1}} title="클릭하여 시간 수정">{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
                             <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px"}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
                           </div>
                           <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
@@ -1200,7 +1210,8 @@ export default function App() {
                         <select value={scheduleMinute} onChange={e=>setScheduleMinute(Number(e.target.value))} style={{padding:"6px 8px",borderRadius:8,border:"1.5px solid #E5E7EB",fontSize:13,fontWeight:600,background:"#fff",cursor:"pointer"}}>
                           {Array.from({length:60},(_,i)=>i).map(m=><option key={m} value={m}>{String(m).padStart(2,"0")}</option>)}
                         </select>
-                        <div onClick={e=>{e.stopPropagation();addScheduleTime()}} style={{marginLeft:"auto",padding:"6px 14px",borderRadius:8,background:"#F0FDF4",border:"1.5px solid #BBF7D0",color:"#16A34A",fontSize:13,fontWeight:700,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.background="#DCFCE7"} onMouseOut={e=>e.currentTarget.style.background="#F0FDF4"}>+ 추가</div>
+                        <div onClick={e=>{e.stopPropagation();addScheduleTime()}} style={{marginLeft:"auto",padding:"6px 14px",borderRadius:8,background:editingScheduleIdx!==null?"#EFF6FF":"#F0FDF4",border:editingScheduleIdx!==null?"1.5px solid #BFDBFE":"1.5px solid #BBF7D0",color:editingScheduleIdx!==null?"#2563EB":"#16A34A",fontSize:13,fontWeight:700,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.background=editingScheduleIdx!==null?"#DBEAFE":"#DCFCE7"} onMouseOut={e=>e.currentTarget.style.background=editingScheduleIdx!==null?"#EFF6FF":"#F0FDF4"}>{editingScheduleIdx!==null?"✓ 수정":"+ 추가"}</div>
+                        {editingScheduleIdx!==null&&<div onClick={e=>{e.stopPropagation();setEditingScheduleIdx(null);}} style={{padding:"6px 10px",borderRadius:8,background:"#F3F4F6",border:"1.5px solid #E5E7EB",color:"#6B7280",fontSize:13,fontWeight:600,cursor:"pointer"}}>취소</div>}
                       </div>
                       {/* 다음 실행 시간 */}
                       {scheduleEnabled&&importSchedule.length>0&&(()=>{const n=getNextSchedule();if(!n)return null;const hm=`${String(n.hour).padStart(2,"0")}:${String(n.minute).padStart(2,"0")}`;const diffH=Math.floor(n.diff/60);const diffM=n.diff%60;const diffStr=diffH>0?`${diffH}시간${diffM>0?` ${diffM}분`:""}`:diffM>0?`${diffM}분`:"곧";const nCh=n.channel||["all"];const nChLabel=nCh.includes("all")?"전체":nCh.map(v=>channelDefs[v]?.label||v).join(", ");return<div style={{padding:"10px 18px",borderTop:"1px solid #F3F4F6",fontSize:12,color:"#6B7280",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
