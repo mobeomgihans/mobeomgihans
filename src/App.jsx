@@ -1198,7 +1198,7 @@ export default function App() {
                         </select>
                         <span style={{fontWeight:700,color:"#9CA3AF"}}>:</span>
                         <select value={scheduleMinute} onChange={e=>setScheduleMinute(Number(e.target.value))} style={{padding:"6px 8px",borderRadius:8,border:"1.5px solid #E5E7EB",fontSize:13,fontWeight:600,background:"#fff",cursor:"pointer"}}>
-                          {[0,30].map(m=><option key={m} value={m}>{String(m).padStart(2,"0")}</option>)}
+                          {Array.from({length:60},(_,i)=>i).map(m=><option key={m} value={m}>{String(m).padStart(2,"0")}</option>)}
                         </select>
                         <div onClick={e=>{e.stopPropagation();addScheduleTime()}} style={{marginLeft:"auto",padding:"6px 14px",borderRadius:8,background:"#F0FDF4",border:"1.5px solid #BBF7D0",color:"#16A34A",fontSize:13,fontWeight:700,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.background="#DCFCE7"} onMouseOut={e=>e.currentTarget.style.background="#F0FDF4"}>+ 추가</div>
                       </div>
