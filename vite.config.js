@@ -375,6 +375,46 @@ function fgBridgePlugin() {
           return;
         }
 
+        // GET /api/bj-login — 로그인 설정 조회
+        if (req.method === 'GET' && req.url === '/api/bj-login') {
+          cors(res);
+          res.setHeader('Content-Type', 'application/json');
+          const loginPath = path.resolve('bj-login.json');
+          try {
+            const data = JSON.parse(fs.readFileSync(loginPath, 'utf8'));
+            res.end(JSON.stringify({ ok: true, loginId: data.loginId || '', hasPassword: !!(data.loginPw) }));
+          } catch {
+            res.end(JSON.stringify({ ok: true, loginId: '', hasPassword: false }));
+          }
+          return;
+        }
+
+        // POST /api/bj-login — 로그인 설정 저장
+        if (req.method === 'POST' && req.url === '/api/bj-login') {
+          let body = '';
+          req.on('data', chunk => body += chunk);
+          req.on('end', () => {
+            try {
+              const data = JSON.parse(body);
+              const loginPath = path.resolve('bj-login.json');
+              let existing = {};
+              try { existing = JSON.parse(fs.readFileSync(loginPath, 'utf8')); } catch {}
+              if (data.loginId !== undefined) existing.loginId = data.loginId;
+              if (data.loginPw !== undefined) existing.loginPw = data.loginPw;
+              fs.writeFileSync(loginPath, JSON.stringify(existing, null, 2), 'utf8');
+              cors(res);
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ ok: true }));
+              console.log(`[FG Bridge] 발주모아 로그인 정보 저장됨`);
+            } catch (e) {
+              cors(res);
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: e.message }));
+            }
+          });
+          return;
+        }
+
         next();
       });
     }

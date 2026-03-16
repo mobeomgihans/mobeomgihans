@@ -812,6 +812,14 @@ export default function App() {
   const [showImportPanel,setShowImportPanel]=useState(false);
   const [showChannelMenu,setShowChannelMenu]=useState(false);
   const importStopRef=useRef(false);
+  const [bjLoginId,setBjLoginId]=useState("");
+  const [bjLoginPw,setBjLoginPw]=useState("");
+  const [bjLoginSaved,setBjLoginSaved]=useState(false);
+  const [showLoginSettings,setShowLoginSettings]=useState(false);
+  useEffect(()=>{fetch('/api/bj-login').then(r=>r.json()).then(d=>{if(d.ok){setBjLoginId(d.loginId||"");setBjLoginSaved(d.hasPassword);}}).catch(()=>{});},[]);
+  const saveBjLogin=async()=>{
+    try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
+  };
   useEffect(()=>{if(!showChannelMenu)return;const h=()=>setShowChannelMenu(false);setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
   const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
   const stopImport=async()=>{
@@ -832,7 +840,7 @@ export default function App() {
       const r=await fetch('/api/trigger-import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel})});
       const d=await r.json();
       if(d.ok){
-        const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
+        const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_auto:"자동 로그인중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
         let done=false;let lastStatus="";let sameCount=0;
         for(let i=0;i<120&&!done;i++){
           await new Promise(r=>setTimeout(r,2000));
@@ -1182,6 +1190,19 @@ export default function App() {
                     <span style={{color:prefixColor,flexShrink:0,minWidth:32,fontWeight:700}}>{prefix}</span>
                     <span style={{wordBreak:"break-all"}}>{log.msg}</span>
                   </div>})}
+                </div>
+                {/* 로그인 설정 */}
+                <div style={{borderTop:"1px solid #374151",marginTop:10,paddingTop:10}}>
+                  <div onClick={()=>setShowLoginSettings(!showLoginSettings)} style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,color:"#9CA3AF"}}>
+                    <span style={{fontSize:10}}>{showLoginSettings?"▼":"▶"}</span>
+                    <span>발주모아 로그인 설정</span>
+                    {bjLoginSaved&&<span style={{color:"#22C55E",fontSize:11}}>({bjLoginId||"설정됨"})</span>}
+                  </div>
+                  {showLoginSettings&&<div style={{marginTop:8,display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <input value={bjLoginId} onChange={e=>setBjLoginId(e.target.value)} placeholder="아이디" style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:140,outline:"none"}}/>
+                    <input type="password" value={bjLoginPw} onChange={e=>setBjLoginPw(e.target.value)} placeholder={bjLoginSaved?"(저장됨) 변경시 입력":"비밀번호"} style={{background:"#1F2937",border:"1px solid #374151",borderRadius:6,padding:"6px 10px",fontSize:12,color:"#F9FAFB",width:180,outline:"none"}}/>
+                    <div onClick={saveBjLogin} style={{padding:"6px 14px",background:"#374151",borderRadius:6,fontSize:12,color:"#D1D5DB",cursor:"pointer",fontWeight:600}} onMouseOver={e=>e.currentTarget.style.background="#4B5563"} onMouseOut={e=>e.currentTarget.style.background="#374151"}>저장</div>
+                  </div>}
                 </div>
               </div>}
 
