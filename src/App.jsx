@@ -1181,13 +1181,14 @@ export default function App() {
                       {/* 시간 목록 */}
                       <div style={{padding:"6px 0",maxHeight:200,overflowY:"auto"}}>
                         {importSchedule.length===0&&<div style={{padding:"16px 18px",fontSize:13,color:"#9CA3AF",textAlign:"center"}}>설정된 스케줄이 없습니다</div>}
-                        {importSchedule.map((s,i)=>{const sCh=s.channel||["all"];const chLabel=sCh.includes("all")?"전체":sCh.map(v=>channelDefs[v]?.label||v).join(", ");const chColor=sCh.includes("all")?channelDefs.all.color:sCh.length===1?(channelDefs[sCh[0]]?.color||"#374151"):"#374151";return<div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 18px",fontSize:14,color:"#374151",gap:8}} onMouseOver={e=>e.currentTarget.style.background="#F9FAFB"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
-                          <span style={{fontWeight:600,fontVariantNumeric:"tabular-nums",flexShrink:0}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
-                          <select value={sCh.join(",")} onChange={e=>{e.stopPropagation();const v=e.target.value;updateScheduleChannel(i,v==="all"?["all"]:[v]);}} style={{padding:"3px 6px",borderRadius:6,border:"1.5px solid #E5E7EB",fontSize:11,fontWeight:600,color:chColor,background:"#fff",cursor:"pointer",maxWidth:100}}>
-                            <option value="all">전체</option>
-                            {defaultOrder.filter(k=>k!=="all").map(k=><option key={k} value={k}>{channelDefs[k].emoji} {channelDefs[k].label}</option>)}
-                          </select>
-                          <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px",flexShrink:0}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
+                        {importSchedule.map((s,i)=>{const sCh=s.channel||["all"];return<div key={i} style={{padding:"10px 18px",borderBottom:"1px solid #F9FAFB"}}>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                            <span style={{fontWeight:700,fontSize:15,fontVariantNumeric:"tabular-nums",color:"#111"}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
+                            <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px"}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
+                          </div>
+                          <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                            {defaultOrder.map(k=>{const c=channelDefs[k];const sel=sCh.includes(k);return<span key={k} onClick={e=>{e.stopPropagation();if(k==="all"){updateScheduleChannel(i,["all"]);}else{let next=sCh.filter(v=>v!=="all");if(next.includes(k))next=next.filter(v=>v!==k);else next=[...next,k];if(next.length===0||next.length===5)next=["all"];updateScheduleChannel(i,next);}}} style={{padding:"2px 8px",borderRadius:6,fontSize:11,fontWeight:sel?700:500,color:sel?c.color:"#9CA3AF",background:sel?c.bg:"#F9FAFB",border:sel?`1.5px solid ${c.border}`:"1.5px solid #E5E7EB",cursor:"pointer",transition:"all 0.15s",userSelect:"none"}}>{c.emoji} {c.label}</span>})}
+                          </div>
                         </div>})}
                       </div>
                       {/* 시간 추가 */}
