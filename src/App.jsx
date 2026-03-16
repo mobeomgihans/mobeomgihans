@@ -860,7 +860,7 @@ export default function App() {
       const d=await r.json();
       if(d.ok){
         const statusLabels={launching:"웨일 브라우저 실행중...",connecting:"발주모아 접속중...",login_auto:"자동 로그인중...",login_required:"로그인 필요 — 브라우저 확인",importing:"주문 가져오는 중...",fetching:"주문 수집중...",registering:"주문 등록중...",checking_accounts:"계정 확인중...",selecting_channel:"채널 선택중...",setting_date:"날짜 설정중...",waiting_orders:"주문 로딩 대기중...",selecting_orders:"주문 선택중...",closing_modals:"모달 정리중...",done:"완료",error:"오류 발생",stopped:"중지됨"};
-        let done=false;let lastStatus="";let sameCount=0;
+        let done=false;let lastStatus="";let sameCount=0;const channel=channelStr;
         for(let i=0;i<120&&!done;i++){
           await new Promise(r=>setTimeout(r,2000));
           if(importStopRef.current){done=true;break;}
@@ -892,7 +892,7 @@ export default function App() {
               showToast("연동 프로세스 응답 없음 — 자동 중지됨","error");
               try{fetch('/api/stop-import',{method:'POST'});}catch{}
             }
-          }catch{}
+          }catch(err){console.error('polling error:',err);}
         }
         if(!done){
           setImportStatus(prev=>({running:false,result:{message:'타임아웃'},statusText:"",logs:prev.logs,channel}));
