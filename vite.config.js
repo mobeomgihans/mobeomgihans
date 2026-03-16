@@ -339,7 +339,7 @@ function fgBridgePlugin() {
         }
 
         // GET /api/import-status — 연동 가져오기 상태 확인
-        if (req.method === 'GET' && req.url === '/api/import-status') {
+        if (req.method === 'GET' && req.url.startsWith('/api/import-status')) {
           cors(res);
           res.setHeader('Content-Type', 'application/json');
           const statusPath = path.resolve('public/import-status.json');
