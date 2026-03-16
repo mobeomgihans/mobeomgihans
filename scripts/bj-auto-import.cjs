@@ -36,7 +36,7 @@ const channelIdx = args.indexOf('--channel');
 const CHANNEL_RAW = channelIdx >= 0 && args[channelIdx + 1] ? args[channelIdx + 1] : 'all';
 const CHANNELS = CHANNEL_RAW.split(',').map(c => c.trim());
 const IS_ALL = CHANNELS.includes('all');
-const CHANNEL_LABELS = { all: '전체', coupang: '쿠팡', smartstore: '스마트스토어', etc: '기타' };
+const CHANNEL_LABELS = { all: '전체', coupang: '쿠팡', smartstore: '스마트스토어', flexgate: '플렉스지', talkstore: '톡스토어', toss: '토스' };
 const channelLabel = IS_ALL ? '전체' : CHANNELS.map(c => CHANNEL_LABELS[c] || c).join(', ');
 
 // ─── 로그 관리 ───────────────────────────────────────
@@ -432,7 +432,9 @@ const cleanLocks = () => {
     const channelKeywords = {
       coupang: ['쿠팡', 'Coupang', 'coupang', 'COUPANG'],
       smartstore: ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어', 'SMARTSTORE'],
-      etc: []
+      flexgate: ['플렉스지', 'Flexgate', 'flexgate', 'FLEXGATE'],
+      talkstore: ['톡스토어', 'Talkstore', 'talkstore', 'TALKSTORE'],
+      toss: ['토스', 'Toss', 'toss', 'TOSS'],
     };
 
     if (IS_ALL) {
@@ -475,27 +477,16 @@ const cleanLocks = () => {
       // 2단계: 해당 채널 계정들만 클릭 (다중 채널 지원)
       // 각 채널의 키워드를 합산
       const allKeywords = [];
-      const hasEtc = CHANNELS.includes('etc');
       for (const ch of CHANNELS) {
         if (channelKeywords[ch]) allKeywords.push(...channelKeywords[ch]);
       }
 
-      const selResult = await page.evaluate((channels, allKw, hasEtc) => {
+      const selResult = await page.evaluate((channels, allKw) => {
         const selected = [];
         const skipped = [];
-        const coupangKw = ['쿠팡', 'Coupang', 'coupang', 'COUPANG'];
-        const smartKw = ['스마트스토어', 'SmartStore', 'smartstore', '스마트 스토어'];
 
         const shouldSelect = (text) => {
-          // 키워드 매칭
-          if (allKw.some(k => text.includes(k))) return true;
-          // "기타" 채널: 쿠팡/스마트스토어가 아닌 것
-          if (hasEtc) {
-            const isCoupang = coupangKw.some(k => text.includes(k));
-            const isSmart = smartKw.some(k => text.includes(k));
-            if (!isCoupang && !isSmart) return true;
-          }
-          return false;
+          return allKw.some(k => text.includes(k));
         };
 
         // 체크박스 방식
@@ -522,7 +513,7 @@ const cleanLocks = () => {
           else { skipped.push(t); }
         }
         return { count: selected.length, selected, skipped, method: 'tab' };
-      }, CHANNELS, allKeywords, hasEtc);
+      }, CHANNELS, allKeywords);
 
       addLog(`${channelLabel} 계정 ${selResult.count}개 선택 (방식: ${selResult.method})`);
       for (const s of selResult.selected) addLog(`  선택: "${s}"`);

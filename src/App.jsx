@@ -823,19 +823,24 @@ export default function App() {
     try{await fetch('/api/bj-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({loginId:bjLoginId,loginPw:bjLoginPw,repId:bjRepId,loginType:bjLoginType})});setBjLoginSaved(true);setBjLoginPw("");showToast("발주모아 로그인 정보 저장됨");}catch{showToast("저장 실패","error");}
   };
   useEffect(()=>{if(!showChannelMenu)return;const h=(e)=>{if(!e.target.closest('[data-channel-menu]'))setShowChannelMenu(false)};setTimeout(()=>document.addEventListener("click",h),0);return()=>document.removeEventListener("click",h);},[showChannelMenu]);
-  const importChannels=[{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},{value:"etc",label:"기타",emoji:"📋",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"}];
+  const channelDefs={all:{value:"all",label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"},coupang:{value:"coupang",label:"쿠팡",emoji:"🟠",color:"#C2410C",bg:"#FFF7ED",border:"#FED7AA",hoverBg:"#FFEDD5"},smartstore:{value:"smartstore",label:"스마트스토어",emoji:"🟢",color:"#0369A1",bg:"#F0F9FF",border:"#BAE6FD",hoverBg:"#E0F2FE"},flexgate:{value:"flexgate",label:"플렉스지",emoji:"🔵",color:"#7C3AED",bg:"#F5F3FF",border:"#DDD6FE",hoverBg:"#EDE9FE"},talkstore:{value:"talkstore",label:"톡스토어",emoji:"🟡",color:"#CA8A04",bg:"#FEFCE8",border:"#FEF08A",hoverBg:"#FEF9C3"},toss:{value:"toss",label:"토스",emoji:"🔷",color:"#2563EB",bg:"#EFF6FF",border:"#BFDBFE",hoverBg:"#DBEAFE"}};
+  const defaultOrder=["all","coupang","smartstore","flexgate","talkstore","toss"];
+  const [channelOrder,setChannelOrder]=useState(()=>{try{const s=localStorage.getItem("channelOrder");if(s){const arr=JSON.parse(s);if(Array.isArray(arr)&&arr.length===defaultOrder.length)return arr;}}catch{}return defaultOrder;});
+  const importChannels=channelOrder.map(k=>channelDefs[k]).filter(Boolean);
+  const [dragIdx,setDragIdx]=useState(null);
+  const saveChannelOrder=(order)=>{setChannelOrder(order);try{localStorage.setItem("channelOrder",JSON.stringify(order));}catch{}};
   const toggleChannel=(val)=>{
     if(val==="all"){setImportChannel(["all"]);return;}
     setImportChannel(prev=>{
       let next=prev.filter(v=>v!=="all");
       if(next.includes(val))next=next.filter(v=>v!==val);else next=[...next,val];
-      if(next.length===0||next.length===3)return["all"];
+      if(next.length===0||next.length===5)return["all"];
       return next;
     });
   };
   const getChannelDisplay=()=>{
-    if(importChannel.includes("all"))return{label:"전체",emoji:"📦",color:"#15803D",bg:"#F0FDF4",border:"#BBF7D0",hoverBg:"#DCFCE7"};
-    const selected=importChannel.map(v=>importChannels.find(c=>c.value===v)).filter(Boolean);
+    if(importChannel.includes("all"))return channelDefs.all;
+    const selected=importChannel.map(v=>channelDefs[v]).filter(Boolean);
     if(selected.length===1)return selected[0];
     return{label:selected.map(c=>c.label).join(", "),emoji:selected.map(c=>c.emoji).join(""),color:"#374151",bg:"#F9FAFB",border:"#E5E7EB",hoverBg:"#F3F4F6"};
   };
@@ -1184,8 +1189,9 @@ export default function App() {
                         ■ 중지
                       </div>}
                     </div>})()}
-                    {showChannelMenu&&!importStatus.running&&<div data-channel-menu style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",overflow:"hidden",zIndex:100,minWidth:180,padding:"4px 0"}}>
-                      {importChannels.map(c=>{const sel=c.value==="all"?importChannel.includes("all"):importChannel.includes(c.value);return<div key={c.value} onClick={e=>{e.stopPropagation();toggleChannel(c.value)}} style={{padding:"11px 16px",fontSize:13,fontWeight:sel?700:500,color:sel?c.color:"#374151",background:sel?c.bg:"#fff",cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.1s",borderLeft:sel?`3px solid ${c.color}`:"3px solid transparent"}} onMouseOver={e=>{e.currentTarget.style.background=sel?c.bg:"#F9FAFB";e.currentTarget.style.color=c.color}} onMouseOut={e=>{e.currentTarget.style.background=sel?c.bg:"#fff";e.currentTarget.style.color=sel?c.color:"#374151"}}>
+                    {showChannelMenu&&!importStatus.running&&<div data-channel-menu style={{position:"absolute",top:"100%",right:0,marginTop:6,background:"#fff",borderRadius:14,border:"1.5px solid #E5E7EB",boxShadow:"0 10px 32px rgba(0,0,0,0.14)",overflow:"hidden",zIndex:100,minWidth:190,padding:"4px 0"}}>
+                      {importChannels.map((c,idx)=>{const sel=c.value==="all"?importChannel.includes("all"):importChannel.includes(c.value);const isAll=c.value==="all";const isDragging=dragIdx===idx;return<div key={c.value} draggable={!isAll} onDragStart={e=>{if(isAll){e.preventDefault();return;}setDragIdx(idx);e.dataTransfer.effectAllowed="move";}} onDragOver={e=>{if(isAll||idx===0)return;e.preventDefault();e.dataTransfer.dropEffect="move";}} onDrop={e=>{e.preventDefault();if(isAll||dragIdx===null||dragIdx===idx||idx===0)return;const newOrder=[...channelOrder];const [moved]=newOrder.splice(dragIdx,1);newOrder.splice(idx,0,moved);saveChannelOrder(newOrder);setDragIdx(null);}} onDragEnd={()=>setDragIdx(null)} onClick={e=>{e.stopPropagation();toggleChannel(c.value)}} style={{padding:"11px 16px",fontSize:13,fontWeight:sel?700:500,color:sel?c.color:"#374151",background:isDragging?"#F3F4F6":sel?c.bg:"#fff",cursor:isAll?"pointer":"grab",display:"flex",alignItems:"center",gap:10,transition:"all 0.1s",borderLeft:sel?`3px solid ${c.color}`:"3px solid transparent",opacity:isDragging?0.4:1}} onMouseOver={e=>{e.currentTarget.style.background=sel?c.bg:"#F9FAFB";e.currentTarget.style.color=c.color}} onMouseOut={e=>{e.currentTarget.style.background=isDragging?"#F3F4F6":sel?c.bg:"#fff";e.currentTarget.style.color=sel?c.color:"#374151"}}>
+                        {!isAll&&<span style={{fontSize:10,color:"#9CA3AF",cursor:"grab",userSelect:"none"}}>⠿</span>}
                         <span style={{fontSize:15}}>{c.emoji}</span><span>{c.label}</span>{sel&&<span style={{marginLeft:"auto",color:c.color,fontSize:14}}>✓</span>}
                       </div>})}
                     </div>}
