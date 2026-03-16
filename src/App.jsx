@@ -799,9 +799,10 @@ export default function App() {
   const saveSchedule=(list)=>{setImportSchedule(list);try{localStorage.setItem("importSchedule",JSON.stringify(list));}catch{}};
   const addScheduleTime=()=>{
     if(importSchedule.some(s=>s.hour===scheduleHour&&s.minute===scheduleMinute))return;
-    saveSchedule([...importSchedule,{hour:scheduleHour,minute:scheduleMinute}].sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute));
+    saveSchedule([...importSchedule,{hour:scheduleHour,minute:scheduleMinute,channel:[...importChannel]}].sort((a,b)=>a.hour*60+a.minute-b.hour*60-b.minute));
   };
   const removeScheduleTime=(idx)=>saveSchedule(importSchedule.filter((_,i)=>i!==idx));
+  const updateScheduleChannel=(idx,ch)=>{const list=[...importSchedule];list[idx]={...list[idx],channel:ch};saveSchedule(list);};
   const toggleScheduleEnabled=()=>{const next=!scheduleEnabled;setScheduleEnabled(next);try{localStorage.setItem("scheduleEnabled",String(next));}catch{}};
   const getNextSchedule=()=>{
     if(importSchedule.length===0)return null;
@@ -826,7 +827,7 @@ export default function App() {
           const key=`${s.hour}:${s.minute}`;
           if(lastScheduleRunRef.current[key]!==today){
             lastScheduleRunRef.current[key]=today;
-            triggerImport();
+            triggerImport(s.channel||["all"]);
           }
         }
       }
@@ -1180,10 +1181,14 @@ export default function App() {
                       {/* 시간 목록 */}
                       <div style={{padding:"6px 0",maxHeight:200,overflowY:"auto"}}>
                         {importSchedule.length===0&&<div style={{padding:"16px 18px",fontSize:13,color:"#9CA3AF",textAlign:"center"}}>설정된 스케줄이 없습니다</div>}
-                        {importSchedule.map((s,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 18px",fontSize:14,color:"#374151"}} onMouseOver={e=>e.currentTarget.style.background="#F9FAFB"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
-                          <span style={{fontWeight:600,fontVariantNumeric:"tabular-nums"}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
-                          <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px"}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
-                        </div>)}
+                        {importSchedule.map((s,i)=>{const sCh=s.channel||["all"];const chLabel=sCh.includes("all")?"전체":sCh.map(v=>channelDefs[v]?.label||v).join(", ");const chColor=sCh.includes("all")?channelDefs.all.color:sCh.length===1?(channelDefs[sCh[0]]?.color||"#374151"):"#374151";return<div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 18px",fontSize:14,color:"#374151",gap:8}} onMouseOver={e=>e.currentTarget.style.background="#F9FAFB"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
+                          <span style={{fontWeight:600,fontVariantNumeric:"tabular-nums",flexShrink:0}}>{String(s.hour).padStart(2,"0")}:{String(s.minute).padStart(2,"0")}</span>
+                          <select value={sCh.join(",")} onChange={e=>{e.stopPropagation();const v=e.target.value;updateScheduleChannel(i,v==="all"?["all"]:[v]);}} style={{padding:"3px 6px",borderRadius:6,border:"1.5px solid #E5E7EB",fontSize:11,fontWeight:600,color:chColor,background:"#fff",cursor:"pointer",maxWidth:100}}>
+                            <option value="all">전체</option>
+                            {defaultOrder.filter(k=>k!=="all").map(k=><option key={k} value={k}>{channelDefs[k].emoji} {channelDefs[k].label}</option>)}
+                          </select>
+                          <span onClick={e=>{e.stopPropagation();removeScheduleTime(i)}} style={{cursor:"pointer",color:"#D1D5DB",fontSize:16,lineHeight:1,padding:"2px 4px",flexShrink:0}} onMouseOver={e=>e.currentTarget.style.color="#EF4444"} onMouseOut={e=>e.currentTarget.style.color="#D1D5DB"}>✕</span>
+                        </div>})}
                       </div>
                       {/* 시간 추가 */}
                       <div style={{display:"flex",alignItems:"center",gap:6,padding:"10px 18px",borderTop:"1px solid #F3F4F6"}}>
@@ -1197,8 +1202,8 @@ export default function App() {
                         <div onClick={e=>{e.stopPropagation();addScheduleTime()}} style={{marginLeft:"auto",padding:"6px 14px",borderRadius:8,background:"#F0FDF4",border:"1.5px solid #BBF7D0",color:"#16A34A",fontSize:13,fontWeight:700,cursor:"pointer"}} onMouseOver={e=>e.currentTarget.style.background="#DCFCE7"} onMouseOut={e=>e.currentTarget.style.background="#F0FDF4"}>+ 추가</div>
                       </div>
                       {/* 다음 실행 시간 */}
-                      {scheduleEnabled&&importSchedule.length>0&&(()=>{const n=getNextSchedule();if(!n)return null;const hm=`${String(n.hour).padStart(2,"0")}:${String(n.minute).padStart(2,"0")}`;const diffH=Math.floor(n.diff/60);const diffM=n.diff%60;const diffStr=diffH>0?`${diffH}시간${diffM>0?` ${diffM}분`:""}`:diffM>0?`${diffM}분`:"곧";return<div style={{padding:"10px 18px",borderTop:"1px solid #F3F4F6",fontSize:12,color:"#6B7280",display:"flex",alignItems:"center",gap:6}}>
-                        <span>▶</span> 다음 실행: <span style={{fontWeight:700,color:"#16A34A"}}>{hm}</span> <span style={{color:"#9CA3AF"}}>({n.tomorrow?"내일 ":""}{diffStr} 후)</span>
+                      {scheduleEnabled&&importSchedule.length>0&&(()=>{const n=getNextSchedule();if(!n)return null;const hm=`${String(n.hour).padStart(2,"0")}:${String(n.minute).padStart(2,"0")}`;const diffH=Math.floor(n.diff/60);const diffM=n.diff%60;const diffStr=diffH>0?`${diffH}시간${diffM>0?` ${diffM}분`:""}`:diffM>0?`${diffM}분`:"곧";const nCh=n.channel||["all"];const nChLabel=nCh.includes("all")?"전체":nCh.map(v=>channelDefs[v]?.label||v).join(", ");return<div style={{padding:"10px 18px",borderTop:"1px solid #F3F4F6",fontSize:12,color:"#6B7280",display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                        <span>▶</span> 다음: <span style={{fontWeight:700,color:"#16A34A"}}>{hm}</span> <span style={{color:"#9CA3AF"}}>({n.tomorrow?"내일 ":""}{diffStr} 후)</span> <span style={{fontSize:11,padding:"1px 6px",borderRadius:4,background:"#F3F4F6",color:"#6B7280",fontWeight:600}}>{nChLabel}</span>
                       </div>})()}
                     </div>}
                   </div>
